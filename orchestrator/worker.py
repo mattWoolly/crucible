@@ -13,9 +13,9 @@ from dataclasses import dataclass
 
 from .budget import Budget
 from .config import Config
-from .constants import DEGRADED_CONFIDENCE, MAX_DEP_CONTEXT_BYTES
+from .constants import MAX_DEP_CONTEXT_BYTES
 from .json_extract import extract_worker_result
-from .llm import LLMClient, LLMResponse, ToolCall
+from .llm import LLMClient, LLMResponse
 from .models import Subtask, WorkerResult
 from .observers import Observer, safe
 from .redaction import redact_preview
