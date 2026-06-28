@@ -104,9 +104,11 @@ async def run_critic_loop(
     observer: Observer | None = None,
     budget: Budget | None = None,
     critic_role: str | None = None,
+    on_revise: Callable[[], None] | None = None,
 ) -> tuple[WorkerOutput, CriticScore]:
     """Run §6 exactly. Returns the best-available output (accepted or not) plus
-    its score. ``revise_fn`` produces the next attempt while keeping context."""
+    its score. ``revise_fn`` produces the next attempt while keeping context.
+    ``on_revise`` (optional) is called once per revision round for metrics."""
     critic_role = critic_role or role
     threshold = config.threshold_for(role)
 
@@ -122,6 +124,8 @@ async def run_critic_loop(
         prev_result = current.result
         prev_score = score
 
+        if on_revise is not None:
+            on_revise()
         revised = await revise_fn(current, score)
         revised_score = enforce_threshold(
             await critic_score(llm, critic_role, revised.result, original_task,

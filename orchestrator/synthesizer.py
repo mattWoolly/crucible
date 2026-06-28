@@ -9,6 +9,8 @@ shipped unverified. If the final critic rejects, the synthesizer iterates
 
 from __future__ import annotations
 
+from typing import Callable
+
 from .budget import Budget
 from .config import Config
 from .constants import SYNTHESIZER
@@ -27,6 +29,7 @@ async def run_synthesis(
     config: Config,
     observer: Observer | None = None,
     budget: Budget | None = None,
+    on_revise: Callable[[], None] | None = None,
 ) -> tuple[WorkerOutput, CriticScore]:
     """Run the synthesizer over approved results, then gate the merged answer
     with a final critic pass that re-synthesizes on rejection (§6.3)."""
@@ -43,5 +46,6 @@ async def run_synthesis(
     final_output, final_score = await run_critic_loop(
         llm, SYNTHESIZER, synth_subtask.id, original_task,
         initial, revise_fn, config, observer, budget, critic_role=SYNTHESIZER,
+        on_revise=on_revise,
     )
     return final_output, final_score
