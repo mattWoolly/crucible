@@ -23,3 +23,7 @@ testpaths = ["tests"]
 
 [tool.setuptools.packages.find]
 include = ["orchestrator*"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
