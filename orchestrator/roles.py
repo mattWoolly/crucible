@@ -10,9 +10,14 @@ from __future__ import annotations
 from .constants import CODER, CRITIC, PLANNER, RESEARCHER, SYNTHESIZER
 
 _JSON_CONTRACT = (
-    'Respond with ONE JSON object and nothing else: '
-    '{"summary": str, "artifacts": object, "confidence": number 0..1, '
-    '"uncertainties": [str]}. No prose outside the JSON.'
+    "Work in TURNS. On each turn, either CALL a tool to make progress or, once "
+    "the work is genuinely done, emit your final answer. You MUST actually call "
+    "the tools to do the work — never report a file as written/read unless you "
+    "called the tool for it this session; do not fabricate results. ONLY on the "
+    "final turn, when no further tool calls are needed, respond with ONE JSON "
+    'object and nothing else: {"summary": str, "artifacts": object, '
+    '"confidence": number 0..1, "uncertainties": [str]}. Do NOT emit that JSON '
+    "on a turn where you still need to call a tool."
 )
 
 ROLE_PROMPTS: dict[str, str] = {
