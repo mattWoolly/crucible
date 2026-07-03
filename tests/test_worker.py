@@ -9,6 +9,7 @@ from orchestrator.worker import (
     render_user_task,
     revise_worker,
     run_worker,
+    workspace_orientation,
 )
 
 
@@ -52,6 +53,35 @@ def test_enforce_context_budget_trims_tool_not_system_or_task():
     assert out[0]["content"] == "S"  # system preserved
     assert out[1]["content"] == "the original task"  # task preserved
     assert "trimmed" in out[3]["content"]  # tool result trimmed
+
+
+def test_workspace_orientation_lists_files_and_states_convention(tmp_path):
+    (tmp_path / "PROJECT.md").write_text("spec")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("x = 1")
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "HEAD").write_text("ref")  # must be excluded
+    text = workspace_orientation(str(tmp_path))
+    assert "PROJECT.md" in text
+    assert "src/app.py" in text
+    assert "RELATIVE" in text  # states the path convention
+    assert ".git" not in text  # noise excluded
+
+
+def test_workspace_orientation_handles_empty(tmp_path):
+    assert "(empty)" in workspace_orientation(str(tmp_path))
+
+
+async def test_run_worker_injects_orientation_into_user_message(tmp_path):
+    (tmp_path / "PROJECT.md").write_text("the spec")
+    fake = FakeLLMClient({"researcher": [llm_response('{"summary": "ok", "confidence": 0.9}')]})
+    config = Config(workspace=str(tmp_path))
+    sub = Subtask(id="r1", role="researcher", task="read the spec")
+    out = await run_worker(fake, "researcher", sub, {}, config)
+    first_user = next(m for m in out.messages if m["role"] == "user")
+    assert "Workspace orientation" in first_user["content"]
+    assert "PROJECT.md" in first_user["content"]
+    assert "read the spec" in first_user["content"]  # task still present
 
 
 async def test_worker_emits_final_json_immediately():

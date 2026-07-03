@@ -9,7 +9,9 @@ temperature differ (§4). Dependency outputs are injected as distilled
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
+from pathlib import Path
 
 from .budget import Budget
 from .config import Config
@@ -74,6 +76,38 @@ def render_user_task(
         parts.append("\nContext from prior steps:\n" + "\n\n".join(b[0] for b in ordered))
 
     return "\n".join(parts)
+
+
+def workspace_orientation(workspace: str, max_entries: int = 80) -> str:
+    """A short orientation block naming the path convention and the current
+    workspace contents (§4.1 support).
+
+    Small models otherwise guess non-existent paths (``workspace/``, ``/``,
+    ``research/``) and burn their tool budget on errors. Giving them the actual
+    relative file listing up front grounds every subsequent tool call.
+    """
+    ws = Path(os.path.realpath(workspace))
+    files: list[str] = []
+    truncated = False
+    if ws.is_dir():
+        for root, dirs, names in os.walk(ws):
+            dirs[:] = [d for d in sorted(dirs) if d not in (".git", "__pycache__")]
+            for n in sorted(names):
+                files.append(str(Path(root, n).relative_to(ws)))
+                if len(files) >= max_entries:
+                    truncated = True
+                    break
+            if truncated:
+                break
+    listing = "\n".join(files) if files else "(empty)"
+    if truncated:
+        listing += f"\n… (listing truncated at {max_entries} entries)"
+    return (
+        "Workspace orientation: you operate INSIDE the workspace root. All tool "
+        "paths are RELATIVE to it — read `PROJECT.md`, not `workspace/PROJECT.md`; "
+        "list the root with path `.`. Absolute paths and `..` are rejected. "
+        f"Current workspace contents:\n{listing}"
+    )
 
 
 @dataclass
@@ -191,9 +225,14 @@ async def run_worker(
         subtask_id=subtask.id, role=role, task=subtask.task,
         dependency_ids=list(subtask.depends_on),
     )
+    user_content = (
+        workspace_orientation(config.workspace)
+        + "\n\n"
+        + render_user_task(subtask, dep_results)
+    )
     messages = [
         _system_message(role),
-        {"role": "user", "content": render_user_task(subtask, dep_results)},
+        {"role": "user", "content": user_content},
     ]
     return await _run_loop(llm, role, subtask.id, messages, config, observer, budget)
 
