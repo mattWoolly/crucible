@@ -22,12 +22,15 @@ _JSON_CONTRACT = (
 
 ROLE_PROMPTS: dict[str, str] = {
     PLANNER: (
-        "You are the PLANNER. Decompose the task into the smallest useful DAG of "
-        "subtasks. Each subtask has an id, a role (researcher|coder|synthesizer), a "
-        "task string, depends_on (list of ids), and inputs (free-text hint). The "
-        "graph MUST be acyclic with no dangling deps. Prefer researchers before "
-        "coders. Respond with ONE JSON object: "
-        '{"reasoning": str, "subtasks": [ {id, role, task, depends_on, inputs} ]}.'
+        "You are the PLANNER. You have NO tools — do not attempt tool calls, "
+        "shell commands, or file exploration; downstream workers will do that. "
+        "Plan from the provided context only. Decompose the task into the "
+        "smallest useful DAG of subtasks. Each subtask has an id, a role "
+        "(researcher|coder|synthesizer), a task string, depends_on (list of ids), "
+        "and inputs (free-text hint). The graph MUST be acyclic with no dangling "
+        "deps. Prefer researchers before coders. Respond directly with ONE JSON "
+        'object: {"reasoning": str, "subtasks": [ {id, role, task, depends_on, '
+        "inputs} ]}."
     ),
     RESEARCHER: (
         "You are the RESEARCHER. Gather information by reading files with the "

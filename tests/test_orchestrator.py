@@ -90,6 +90,51 @@ async def test_planner_cycle_triggers_corrective_retry(tmp_path):
     assert "invalid" in sys2["content"]
 
 
+async def test_planner_gets_workspace_orientation(tmp_path):
+    (tmp_path / "PROJECT.md").write_text("spec")
+    plan = _plan_json([
+        {"id": "a", "role": "coder", "task": "t", "depends_on": [], "inputs": ""},
+    ])
+    fake = FakeLLMClient({
+        "planner": [llm_response(plan)],
+        "coder": [_wr("done")],
+        "synthesizer": [_wr("merged")],
+        "critic": [_approve()],
+    })
+    orch = Orchestrator(fake, _config(tmp_path))
+    await orch.run("the task")
+    planner_user = next(
+        m for c in fake.calls if c["role"] == "planner"
+        for m in c["messages"] if m["role"] == "user"
+    )
+    assert "Workspace orientation" in planner_user["content"]
+    assert "PROJECT.md" in planner_user["content"]
+    assert "the task" in planner_user["content"]
+
+
+async def test_planner_no_json_retry_says_no_tools(tmp_path):
+    # First response mimics an agentic model emitting pseudo tool calls (no
+    # JSON at all); the corrective retry must tell it it has no tools.
+    pseudo_tools = llm_response("<think>let me explore</think>\n<tool_call>ls -la</tool_call>")
+    good = _plan_json([
+        {"id": "a", "role": "coder", "task": "t", "depends_on": [], "inputs": ""},
+    ])
+    fake = FakeLLMClient({
+        "planner": [pseudo_tools, llm_response(good)],
+        "coder": [_wr("done")],
+        "synthesizer": [_wr("merged")],
+        "critic": [_approve()],
+    })
+    orch = Orchestrator(fake, _config(tmp_path))
+    report = await orch.run("task")
+    assert report.summary.startswith("merged")
+    planner_calls = [c for c in fake.calls if c["role"] == "planner"]
+    assert len(planner_calls) == 2
+    sys2 = next(m for m in planner_calls[1]["messages"] if m["role"] == "system")
+    assert "no JSON object" in sys2["content"]
+    assert "NO tools" in sys2["content"]
+
+
 async def test_planner_unrepairable_raises_but_emits_run_finished(tmp_path):
     bad = _plan_json([
         {"id": "a", "role": "coder", "task": "t", "depends_on": ["a"], "inputs": ""},

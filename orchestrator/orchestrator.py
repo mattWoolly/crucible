@@ -31,7 +31,7 @@ from .observers import Observer, safe, select_observer
 from .plan_validation import validate_plan
 from .roles import system_prompt
 from .synthesizer import run_synthesis
-from .worker import WorkerOutput, revise_worker, run_worker
+from .worker import WorkerOutput, revise_worker, run_worker, workspace_orientation
 
 
 class Orchestrator:
@@ -52,9 +52,12 @@ class Orchestrator:
                     f"\n\nYour previous plan was invalid: {defect}. "
                     "Fix exactly that defect and return a corrected plan."
                 )
+            # Ground the planner with the actual workspace contents so agentic
+            # models don't try to "explore first" (they have no tools here).
+            user = workspace_orientation(self.config.workspace) + "\n\n" + task
             messages = [
                 {"role": "system", "content": sys, "_role": "planner"},
-                {"role": "user", "content": task},
+                {"role": "user", "content": user},
             ]
             resp = await self.llm.complete(messages, tools=None,
                                            temperature=self.config.temperature_for("planner"))
@@ -64,6 +67,15 @@ class Orchestrator:
                  usage=resp.usage.total_tokens, tool_calls_count=0)
 
             obj = extract_json(resp.content or "")
+            if obj is None:
+                # Most often: the model emitted (pseudo) tool calls or prose
+                # instead of the plan. Say so — "plan has no subtasks" won't
+                # stop it from trying tools again.
+                defect = (
+                    "your response contained no JSON object. You have NO tools; "
+                    "do not attempt tool calls — respond with the JSON plan directly"
+                )
+                continue
             try:
                 plan = Plan.model_validate(obj or {})
                 last_plan = plan
