@@ -135,6 +135,41 @@ async def test_planner_no_json_retry_says_no_tools(tmp_path):
     assert "NO tools" in sys2["content"]
 
 
+class _SynthCrashLLM:
+    """Delegates to a FakeLLMClient but raises LLMError for the synthesizer —
+    models a provider quota dying mid-run (e.g. 429 rate limit)."""
+
+    def __init__(self, inner):
+        self.inner = inner
+        self.calls = inner.calls
+
+    async def complete(self, messages, tools=None, temperature=0.2):
+        from orchestrator.errors import LLMError
+        role = next((m.get("_role") for m in messages if m.get("_role")), None)
+        if role == "synthesizer":
+            raise LLMError("LLM call failed after 4 attempt(s): 429 rate limit")
+        return await self.inner.complete(messages, tools=tools, temperature=temperature)
+
+
+async def test_synthesizer_llm_error_degrades_instead_of_crashing(tmp_path):
+    plan = _plan_json([
+        {"id": "c1", "role": "coder", "task": "write code", "depends_on": [], "inputs": ""},
+    ])
+    fake = FakeLLMClient({
+        "planner": [llm_response(plan)],
+        "coder": [_wr("wrote the code")],
+        "critic": [_approve()],
+    })
+    rec = RecordingObserver()
+    orch = Orchestrator(_SynthCrashLLM(fake), _config(tmp_path, observer=rec))
+    report = await orch.run("task")  # must NOT raise
+    # Worker results survive; the report is degraded, not lost.
+    assert report.subtask_results["c1"].summary == "wrote the code"
+    assert report.confidence <= 0.1
+    assert "synthesis failed" in report.summary
+    assert "run_finished" in rec.events
+
+
 async def test_planner_unrepairable_raises_but_emits_run_finished(tmp_path):
     bad = _plan_json([
         {"id": "a", "role": "coder", "task": "t", "depends_on": ["a"], "inputs": ""},

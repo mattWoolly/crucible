@@ -23,7 +23,7 @@ from .budget import Budget
 from .config import Config
 from .constants import DEGRADED_CONFIDENCE, SYNTHESIZER
 from .critic import run_critic_loop
-from .errors import PlanValidationError
+from .errors import LLMError, PlanValidationError
 from .json_extract import extract_json
 from .llm import LLMClient
 from .models import CriticScore, FinalReport, Plan, Subtask, WorkerResult
@@ -178,22 +178,33 @@ class Orchestrator:
                         results[sid] = result
                         scores[sid] = score
 
-            # Synthesis + final-answer verification (§6.3).
-            final_output, final_score = await run_synthesis(
-                self.llm, synth_subtask, results, task, self.config,
-                self.observer, budget, on_revise=bump,
-            )
-            results[synth_subtask.id] = final_output.result
+            # Synthesis + final-answer verification (§6.3). A persistent LLM
+            # failure here (provider quota/outage) must degrade, not crash —
+            # the accumulated worker results are the valuable part (§11).
+            try:
+                final_output, final_score = await run_synthesis(
+                    self.llm, synth_subtask, results, task, self.config,
+                    self.observer, budget, on_revise=bump,
+                )
+                synth_result = final_output.result
+            except LLMError as exc:
+                # raw doubles as the summary: there is no model output here,
+                # and the report must say why synthesis is missing.
+                synth_result = WorkerResult.degraded(
+                    f"synthesis failed: {exc}", raw=f"synthesis failed: {exc}"
+                )
+                final_score = CriticScore.failed_validation()
+            results[synth_subtask.id] = synth_result
             scores[synth_subtask.id] = final_score
             safe(self.observer, "subtask_finished", subtask_id=synth_subtask.id,
-                 role=SYNTHESIZER, summary=final_output.result.summary,
-                 confidence=final_output.result.confidence)
+                 role=SYNTHESIZER, summary=synth_result.summary,
+                 confidence=synth_result.confidence)
 
-            confidence = final_output.result.confidence
+            confidence = synth_result.confidence
             budget_reason = budget.exhausted()
             if stopped_early or budget_reason:
                 confidence = min(confidence, DEGRADED_CONFIDENCE)
-            summary = final_output.result.summary
+            summary = synth_result.summary
             if budget_reason:
                 summary += f"\n[NOTE: budget exhausted — {budget_reason}; result is partial]"
 
