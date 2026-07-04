@@ -17,28 +17,84 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+from typing import Awaitable, Callable
 
 from .augmentation import augment_plan
 from .budget import Budget
 from .config import Config
-from .constants import DEGRADED_CONFIDENCE, SYNTHESIZER
+from .constants import CODER, DEGRADED_CONFIDENCE, SYNTHESIZER
 from .critic import run_critic_loop
 from .errors import LLMError, PlanValidationError
 from .json_extract import extract_json
 from .llm import LLMClient
-from .models import CriticScore, FinalReport, Plan, Subtask, WorkerResult
+from .models import CriticScore, FinalReport, Plan, Subtask, VerifyResult, WorkerResult
 from .observers import Observer, safe, select_observer
 from .plan_validation import validate_plan
+from .redaction import redact_preview
 from .roles import system_prompt
 from .synthesizer import run_synthesis
 from .worker import WorkerOutput, revise_worker, run_worker, workspace_orientation
 
+# Injected ground-truth gate: given the workspace path, run the project's own
+# checks (e.g. ruff + pytest) and report whether they pass. Async so a real
+# implementation can shell out without blocking the loop.
+Verifier = Callable[[str], Awaitable[VerifyResult]]
+
 
 class Orchestrator:
-    def __init__(self, llm: LLMClient, config: Config) -> None:
+    def __init__(
+        self,
+        llm: LLMClient,
+        config: Config,
+        verifier: Verifier | None = None,
+    ) -> None:
         self.llm = llm
         self.config = config
+        # Optional injected ground-truth gate (e.g. run ruff + pytest). Kept out
+        # of the engine's sandbox purity: the caller supplies the runner.
+        self.verifier = verifier
         self.observer: Observer = select_observer(config.observer)
+
+    async def _verify_and_repair(
+        self, task: str, results: dict, scores: dict, budget: Budget, bump,
+    ) -> VerifyResult:
+        """Run the injected verifier; on failure, drive a bounded repair loop
+        that feeds the real command output back to a coder, then re-verify.
+
+        The final workspace state is either verified green or the run reports
+        ``verified=False`` honestly — no more rubber-stamped 'done'."""
+        vres = await self.verifier(self.config.workspace)
+        safe(self.observer, "verify", attempt=0, passed=vres.passed,
+             output_preview=redact_preview(vres.output))
+        attempt = 0
+        while not vres.passed and attempt < self.config.max_verify_repairs:
+            if budget.exhausted():
+                break
+            attempt += 1
+            repair = Subtask(
+                id=f"verify_repair_{attempt}",
+                role=CODER,
+                task=(
+                    "The project verify command FAILED. Fix the code so it "
+                    "passes. Do NOT delete or weaken tests merely to make them "
+                    "pass — fix the underlying cause. Verify output:\n"
+                    f"{vres.output}"
+                ),
+            )
+            safe(self.observer, "subtask_started", subtask_id=repair.id,
+                 role=CODER, task=repair.task, dependency_ids=[])
+            out = await run_worker(
+                self.llm, CODER, repair, {}, self.config, self.observer, budget
+            )
+            results[repair.id] = out.result
+            scores[repair.id] = CriticScore.failed_validation()
+            bump()
+            safe(self.observer, "subtask_finished", subtask_id=repair.id,
+                 role=CODER, summary=out.result.summary, confidence=out.result.confidence)
+            vres = await self.verifier(self.config.workspace)
+            safe(self.observer, "verify", attempt=attempt, passed=vres.passed,
+                 output_preview=redact_preview(vres.output))
+        return vres
 
     # -- planning ----------------------------------------------------------
     async def _plan(self, task: str, budget: Budget) -> Plan:
@@ -200,6 +256,14 @@ class Orchestrator:
                  role=SYNTHESIZER, summary=synth_result.summary,
                  confidence=synth_result.confidence)
 
+            # Ground-truth verify gate (if injected): the run's definition of
+            # done, enforced by actually running the command — not the critic's
+            # say-so. Repairs happen inside; verified reflects the final state.
+            verified: bool | None = None
+            if self.verifier is not None:
+                vres = await self._verify_and_repair(task, results, scores, budget, bump)
+                verified = vres.passed
+
             confidence = synth_result.confidence
             budget_reason = budget.exhausted()
             if stopped_early or budget_reason:
@@ -207,6 +271,14 @@ class Orchestrator:
             summary = synth_result.summary
             if budget_reason:
                 summary += f"\n[NOTE: budget exhausted — {budget_reason}; result is partial]"
+            if verified is False:
+                confidence = min(confidence, DEGRADED_CONFIDENCE)
+                summary += (
+                    "\n[NOTE: verify gate FAILED after repair attempts — the "
+                    "workspace does not pass its own checks]"
+                )
+            elif verified is True:
+                summary += "\n[verify gate: PASSED]"
 
             report = FinalReport(
                 summary=summary,
@@ -215,6 +287,7 @@ class Orchestrator:
                 critic_scores=scores,
                 iterations=iters[0],
                 tokens_total=budget.total_tokens,
+                verified=verified,
             )
             report_holder["report"] = report
             emit_finished(report)

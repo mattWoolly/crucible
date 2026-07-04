@@ -170,6 +170,94 @@ async def test_synthesizer_llm_error_degrades_instead_of_crashing(tmp_path):
     assert "run_finished" in rec.events
 
 
+class _FakeVerifier:
+    """Fails ``fail_times`` then passes; records how often it ran."""
+
+    def __init__(self, fail_times):
+        self.fail_times = fail_times
+        self.calls = 0
+        self.seen_workspace = None
+
+    async def __call__(self, workspace):
+        from orchestrator.models import VerifyResult
+        self.calls += 1
+        self.seen_workspace = workspace
+        passed = self.calls > self.fail_times
+        return VerifyResult(passed=passed, output="" if passed else "E pytest: 2 failed")
+
+
+def _plan_one_coder():
+    return _plan_json([
+        {"id": "c1", "role": "coder", "task": "write code", "depends_on": [], "inputs": ""},
+    ])
+
+
+async def test_verify_gate_passes_first_try_no_repair(tmp_path):
+    fake = FakeLLMClient({
+        "planner": [llm_response(_plan_one_coder())],
+        "coder": [_wr("wrote code")],
+        "synthesizer": [_wr("merged")],
+        "critic": [_approve()],
+    })
+    verifier = _FakeVerifier(fail_times=0)
+    orch = Orchestrator(fake, _config(tmp_path), verifier=verifier)
+    report = await orch.run("task")
+    assert report.verified is True
+    assert verifier.calls == 1  # ran once, passed, no repair
+    assert verifier.seen_workspace == str(tmp_path)
+    # No repair worker was spawned.
+    assert not any(k.startswith("verify_repair") for k in report.subtask_results)
+
+
+async def test_verify_gate_repairs_then_passes(tmp_path):
+    fake = FakeLLMClient({
+        "planner": [llm_response(_plan_one_coder())],
+        "coder": [_wr("wrote code"), _wr("fixed the failing tests")],  # 2nd = repair
+        "synthesizer": [_wr("merged")],
+        "critic": [_approve()],
+    })
+    verifier = _FakeVerifier(fail_times=1)  # fail once, then pass
+    orch = Orchestrator(fake, _config(tmp_path, max_verify_repairs=2), verifier=verifier)
+    report = await orch.run("task")
+    assert report.verified is True
+    assert verifier.calls == 2  # initial fail + re-verify after repair
+    # A repair worker ran and its result is recorded.
+    assert any(k.startswith("verify_repair") for k in report.subtask_results)
+    # The repair coder was given the failure output.
+    repair_call = next(c for c in fake.calls
+                       if c["role"] == "coder" and any("pytest: 2 failed" in m.get("content", "")
+                                                       for m in c["messages"]))
+    assert repair_call is not None
+
+
+async def test_verify_gate_exhausts_repairs_reports_unverified(tmp_path):
+    fake = FakeLLMClient({
+        "planner": [llm_response(_plan_one_coder())],
+        "coder": [_wr("c") for _ in range(6)],
+        "synthesizer": [_wr("merged")],
+        "critic": [_approve()],
+    })
+    verifier = _FakeVerifier(fail_times=99)  # never passes
+    orch = Orchestrator(fake, _config(tmp_path, max_verify_repairs=2), verifier=verifier)
+    report = await orch.run("task")  # must NOT raise
+    assert report.verified is False
+    assert verifier.calls == 3  # initial + 2 repair attempts
+    assert report.confidence <= 0.1  # capped: verify never passed
+    assert "verify" in report.summary.lower()
+
+
+async def test_no_verifier_leaves_verified_none(tmp_path):
+    fake = FakeLLMClient({
+        "planner": [llm_response(_plan_one_coder())],
+        "coder": [_wr("wrote code")],
+        "synthesizer": [_wr("merged")],
+        "critic": [_approve()],
+    })
+    orch = Orchestrator(fake, _config(tmp_path))  # no verifier
+    report = await orch.run("task")
+    assert report.verified is None
+
+
 async def test_planner_unrepairable_raises_but_emits_run_finished(tmp_path):
     bad = _plan_json([
         {"id": "a", "role": "coder", "task": "t", "depends_on": ["a"], "inputs": ""},

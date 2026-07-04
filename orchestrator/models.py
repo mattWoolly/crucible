@@ -87,6 +87,17 @@ class CriticScore(BaseModel):
         )
 
 
+class VerifyResult(BaseModel):
+    """Outcome of the optional project verify gate (e.g. ruff + pytest).
+
+    ``passed`` is ground truth from actually running the command; ``output`` is
+    the (truncated) combined stdout/stderr fed back to a repair worker.
+    """
+
+    passed: bool
+    output: str = ""
+
+
 class FinalReport(BaseModel):
     """What ``run()`` returns (§2 FinalReport)."""
 
@@ -96,3 +107,5 @@ class FinalReport(BaseModel):
     critic_scores: dict[str, CriticScore] = Field(default_factory=dict)
     iterations: int = 0
     tokens_total: int = 0
+    # None = no verify gate ran; True/False = the gate's final ground-truth verdict.
+    verified: bool | None = None

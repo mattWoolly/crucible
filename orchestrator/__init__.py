@@ -11,7 +11,7 @@ from .config import Config, LLMSettings
 from .constants import DEGRADED_CONFIDENCE
 from .errors import BudgetExhausted, LLMError, OrchestratorError, PlanValidationError
 from .llm import FakeLLMClient, LLMClient, OpenAIClient
-from .models import CriticScore, FinalReport, Plan, Subtask, WorkerResult
+from .models import CriticScore, FinalReport, Plan, Subtask, VerifyResult, WorkerResult
 from .observers import (
     JSONLObserver,
     LangfuseObserver,
@@ -33,6 +33,7 @@ __all__ = [
     "CriticScore",
     "Plan",
     "Subtask",
+    "VerifyResult",
     "Observer",
     "NoopObserver",
     "JSONLObserver",

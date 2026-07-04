@@ -34,6 +34,11 @@ class Config:
     # Plan validation retry budget (§5.1).
     max_plan_retries: int = 3
 
+    # Optional project verify gate: how many repair passes to attempt when the
+    # injected verifier reports failure after synthesis (0 = verify but never
+    # repair). The verifier itself is injected into Orchestrator, not here.
+    max_verify_repairs: int = C.DEFAULT_MAX_VERIFY_REPAIRS
+
     def threshold_for(self, role: str) -> float:
         """Per-role threshold override falls back to the base threshold (§6.4, §10)."""
         return self.approval_threshold_by_role.get(role, self.approval_threshold)
