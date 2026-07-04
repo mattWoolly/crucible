@@ -9,11 +9,18 @@ test ever hits the network (§12: no live LLM tests).
 from __future__ import annotations
 
 import asyncio
+import random
 import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Protocol, Sequence, runtime_checkable
 
-from .constants import DEFAULT_LLM_RETRIES
+from .constants import (
+    DEFAULT_LLM_RETRIES,
+    DEFAULT_MAX_CONCURRENCY,
+    DEFAULT_RATE_LIMIT_BACKOFF_S,
+    DEFAULT_RATE_LIMIT_RETRIES,
+    RATE_LIMIT_BACKOFF_CAP_S,
+)
 from .errors import LLMError
 from .json_extract import extract_json
 
@@ -74,6 +81,13 @@ def _is_retryable(exc: BaseException) -> bool:
     return False
 
 
+def _is_rate_limit(exc: BaseException) -> bool:
+    """429s get their own (longer) retry budget — a burst of parallel workers
+    hitting a per-minute cap recovers in tens of seconds, not in the ~3.5s the
+    generic backoff allows."""
+    return type(exc).__name__ == "RateLimitError" or getattr(exc, "status_code", None) == 429
+
+
 class OpenAIClient:
     """Thin wrapper over ``openai.AsyncOpenAI`` with retry/backoff (§11)."""
 
@@ -85,12 +99,18 @@ class OpenAIClient:
         *,
         retries: int = DEFAULT_LLM_RETRIES,
         backoff_base: float = 0.5,
+        rate_limit_retries: int = DEFAULT_RATE_LIMIT_RETRIES,
+        rate_limit_backoff_base: float = DEFAULT_RATE_LIMIT_BACKOFF_S,
+        max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
         client: Any | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         self.model = model
         self.retries = retries
         self.backoff_base = backoff_base
+        self.rate_limit_retries = rate_limit_retries
+        self.rate_limit_backoff_base = rate_limit_backoff_base
+        self._sem = asyncio.Semaphore(max_concurrency)
         self._sleep = sleep
         if client is not None:
             self._client = client
@@ -114,12 +134,28 @@ class OpenAIClient:
             kwargs["tools"] = tools
 
         attempt = 0
+        rl_attempt = 0
         start = time.monotonic()
         while True:
             try:
-                resp = await self._client.chat.completions.create(**kwargs)
+                async with self._sem:  # cap parallel requests (burst -> 429)
+                    resp = await self._client.chat.completions.create(**kwargs)
                 return self._parse(resp, (time.monotonic() - start) * 1000)
             except Exception as exc:  # noqa: BLE001 - classified below
+                if _is_rate_limit(exc):
+                    # Dedicated budget + long capped backoff with jitter so
+                    # parallel workers don't retry in lockstep.
+                    rl_attempt += 1
+                    if rl_attempt > self.rate_limit_retries:
+                        raise LLMError(
+                            f"LLM call failed after {rl_attempt} rate-limited attempt(s): {exc}"
+                        ) from exc
+                    delay = min(
+                        self.rate_limit_backoff_base * (2 ** (rl_attempt - 1)),
+                        RATE_LIMIT_BACKOFF_CAP_S,
+                    )
+                    await self._sleep(delay + random.uniform(0, delay / 4))  # noqa: S311
+                    continue
                 attempt += 1
                 if attempt > self.retries or not _is_retryable(exc):
                     raise LLMError(f"LLM call failed after {attempt} attempt(s): {exc}") from exc

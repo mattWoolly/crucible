@@ -45,3 +45,10 @@ SHELL_OUTPUT_CAP = 20_000
 
 # --- LLM client -----------------------------------------------------------
 DEFAULT_LLM_RETRIES = 3
+
+# Rate-limit handling (429 from a burst of parallel workers): dedicated retry
+# budget with long, capped, jittered backoff; and a cap on concurrent requests.
+DEFAULT_RATE_LIMIT_RETRIES = 6
+DEFAULT_RATE_LIMIT_BACKOFF_S = 10.0
+RATE_LIMIT_BACKOFF_CAP_S = 60.0
+DEFAULT_MAX_CONCURRENCY = 4

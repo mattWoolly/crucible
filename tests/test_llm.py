@@ -129,3 +129,94 @@ async def test_openai_client_parses_tool_calls():
     assert len(resp.tool_calls) == 1
     assert resp.tool_calls[0].name == "read_file"
     assert resp.tool_calls[0].args == {"path": "a.py"}
+
+
+# --- rate-limit-aware retry + concurrency cap ------------------------------
+class _RateLimited(Exception):
+    def __init__(self):
+        super().__init__("429 Token Plan rate limit reached")
+        self.status_code = 429
+
+
+_RateLimited.__name__ = "RateLimitError"  # match retryable classification
+
+
+class _FlakyRateLimitedOpenAI:
+    """429s a fixed number of times, then succeeds."""
+
+    def __init__(self, fail_times):
+        self.fail_times = fail_times
+        self.calls = 0
+        self.chat = types.SimpleNamespace(
+            completions=types.SimpleNamespace(create=self._create)
+        )
+
+    async def _create(self, **kwargs):
+        self.calls += 1
+        if self.calls <= self.fail_times:
+            raise _RateLimited()
+        msg = types.SimpleNamespace(content='{"summary": "ok"}', tool_calls=None)
+        return types.SimpleNamespace(
+            choices=[types.SimpleNamespace(message=msg)],
+            usage=types.SimpleNamespace(prompt_tokens=1, completion_tokens=1, total_tokens=2),
+            model="m",
+        )
+
+
+async def test_rate_limit_gets_longer_backoff_and_own_retry_budget():
+    # 5 consecutive 429s would exhaust the generic budget (retries=3); the
+    # dedicated rate-limit budget must survive them, with much longer waits.
+    fake = _FlakyRateLimitedOpenAI(fail_times=5)
+    sleeps = []
+
+    async def fake_sleep(d):
+        sleeps.append(d)
+
+    client = OpenAIClient(None, None, "m", client=fake, sleep=fake_sleep)
+    resp = await client.complete([{"role": "user", "content": "hi"}])
+    assert resp.content == '{"summary": "ok"}'
+    assert fake.calls == 6
+    assert len(sleeps) == 5
+    # Exponential from 10s, capped at 60s, plus up to 25% jitter.
+    for got, base in zip(sleeps, [10.0, 20.0, 40.0, 60.0, 60.0]):
+        assert base <= got <= base * 1.25, f"backoff {got} outside [{base}, {base*1.25}]"
+
+
+async def test_rate_limit_exhaustion_still_raises():
+    fake = _FlakyRateLimitedOpenAI(fail_times=99)
+
+    async def fake_sleep(d):
+        return None
+
+    client = OpenAIClient(None, None, "m", rate_limit_retries=2, client=fake, sleep=fake_sleep)
+    with pytest.raises(LLMError):
+        await client.complete([{"role": "user", "content": "hi"}])
+    assert fake.calls == 3  # initial + 2 rate-limit retries
+
+
+async def test_max_concurrency_caps_parallel_requests():
+    state = {"active": 0, "peak": 0}
+
+    class _SlowOpenAI:
+        def __init__(self):
+            self.chat = types.SimpleNamespace(
+                completions=types.SimpleNamespace(create=self._create)
+            )
+
+        async def _create(self, **kwargs):
+            state["active"] += 1
+            state["peak"] = max(state["peak"], state["active"])
+            await asyncio.sleep(0.005)
+            state["active"] -= 1
+            msg = types.SimpleNamespace(content="ok", tool_calls=None)
+            return types.SimpleNamespace(
+                choices=[types.SimpleNamespace(message=msg)],
+                usage=types.SimpleNamespace(prompt_tokens=0, completion_tokens=0, total_tokens=0),
+                model="m",
+            )
+
+    client = OpenAIClient(None, None, "m", client=_SlowOpenAI(), max_concurrency=3)
+    await asyncio.gather(*[
+        client.complete([{"role": "user", "content": "hi"}]) for _ in range(10)
+    ])
+    assert state["peak"] <= 3
