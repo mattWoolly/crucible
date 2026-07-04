@@ -81,16 +81,14 @@ class Orchestrator:
                     f"{vres.output}"
                 ),
             )
-            safe(self.observer, "subtask_started", subtask_id=repair.id,
-                 role=CODER, task=repair.task, dependency_ids=[])
+            # run_worker emits subtask_started/subtask_finished itself — don't
+            # double-emit here.
             out = await run_worker(
                 self.llm, CODER, repair, {}, self.config, self.observer, budget
             )
             results[repair.id] = out.result
             scores[repair.id] = CriticScore.failed_validation()
             bump()
-            safe(self.observer, "subtask_finished", subtask_id=repair.id,
-                 role=CODER, summary=out.result.summary, confidence=out.result.confidence)
             vres = await self.verifier(self.config.workspace)
             safe(self.observer, "verify", attempt=attempt, passed=vres.passed,
                  output_preview=redact_preview(vres.output))

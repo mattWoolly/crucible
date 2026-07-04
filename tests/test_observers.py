@@ -2,6 +2,7 @@ import io
 import json
 
 from orchestrator.observers import (
+    EVENTS,
     JSONLObserver,
     NoopObserver,
     Observer,
@@ -32,6 +33,23 @@ def test_jsonl_emits_one_line_per_event():
     assert len(lines) == 2
     rec = json.loads(lines[0])
     assert rec["event"] == "run_started" and rec["task"] == "t"
+
+
+def test_base_observer_implements_every_declared_event():
+    # safe() dispatches by attribute name; a declared event with no method
+    # would be silently dropped (the verify-gate regression).
+    obs = Observer()
+    for event in EVENTS:
+        assert callable(getattr(obs, event)), f"Observer missing {event}"
+
+
+def test_jsonl_persists_verify_event():
+    buf = io.StringIO()
+    obs = JSONLObserver(stream=buf)
+    obs.verify(attempt=1, passed=False, output_preview="pytest: 2 failed")
+    rec = json.loads(buf.getvalue().splitlines()[0])
+    assert rec["event"] == "verify"
+    assert rec["passed"] is False and rec["attempt"] == 1
 
 
 def test_jsonl_redacts_secret_in_preview():

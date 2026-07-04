@@ -10,16 +10,19 @@ from orchestrator.observers import Observer
 
 class RecordingObserver(Observer):
     def __init__(self):
-        self.events = []
+        self.events = []   # event names, in order
+        self.records = []  # (name, fields) pairs, for field-level assertions
 
     def __getattribute__(self, name):
         # Record every known event call.
         if name in (
             "run_started", "plan_ready", "subtask_started", "llm_call",
-            "tool_call", "critic_score", "subtask_finished", "run_finished", "flush",
+            "tool_call", "critic_score", "subtask_finished", "verify",
+            "run_finished", "flush",
         ):
             def rec(**f):
                 self.events.append(name)
+                self.records.append((name, f))
             return rec
         return object.__getattribute__(self, name)
 
@@ -217,7 +220,9 @@ async def test_verify_gate_repairs_then_passes(tmp_path):
         "critic": [_approve()],
     })
     verifier = _FakeVerifier(fail_times=1)  # fail once, then pass
-    orch = Orchestrator(fake, _config(tmp_path, max_verify_repairs=2), verifier=verifier)
+    rec = RecordingObserver()
+    orch = Orchestrator(fake, _config(tmp_path, observer=rec, max_verify_repairs=2),
+                        verifier=verifier)
     report = await orch.run("task")
     assert report.verified is True
     assert verifier.calls == 2  # initial fail + re-verify after repair
@@ -228,6 +233,13 @@ async def test_verify_gate_repairs_then_passes(tmp_path):
                        if c["role"] == "coder" and any("pytest: 2 failed" in m.get("content", "")
                                                        for m in c["messages"]))
     assert repair_call is not None
+    # verify events are observable (both attempts: the fail and the pass).
+    verify_events = [f for name, f in rec.records if name == "verify"]
+    assert [f["passed"] for f in verify_events] == [False, True]
+    # The repair subtask is announced exactly once (no double-emit).
+    started = [f for name, f in rec.records if name == "subtask_started"]
+    repair_starts = [f for f in started if f["subtask_id"] == "verify_repair_1"]
+    assert len(repair_starts) == 1
 
 
 async def test_verify_gate_exhausts_repairs_reports_unverified(tmp_path):

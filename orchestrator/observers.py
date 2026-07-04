@@ -23,6 +23,7 @@ EVENTS = (
     "tool_call",
     "critic_score",
     "subtask_finished",
+    "verify",
     "run_finished",
     "flush",
 )
@@ -38,6 +39,7 @@ class Observer:
     def tool_call(self, **f: Any) -> None: ...
     def critic_score(self, **f: Any) -> None: ...
     def subtask_finished(self, **f: Any) -> None: ...
+    def verify(self, **f: Any) -> None: ...
     def run_finished(self, **f: Any) -> None: ...
     def flush(self) -> None: ...
 
@@ -79,6 +81,7 @@ class JSONLObserver(Observer):
     def tool_call(self, **f): self._emit("tool_call", f)
     def critic_score(self, **f): self._emit("critic_score", f)
     def subtask_finished(self, **f): self._emit("subtask_finished", f)
+    def verify(self, **f): self._emit("verify", f)
     def run_finished(self, **f): self._emit("run_finished", f)
 
     def flush(self) -> None:
@@ -134,6 +137,7 @@ class LangfuseObserver(Observer):
     def tool_call(self, **f): self._send("tool_call", f)
     def critic_score(self, **f): self._send("critic_score", f)
     def subtask_finished(self, **f): self._send("subtask_finished", f)
+    def verify(self, **f): self._send("verify", f)
     def run_finished(self, **f): self._send("run_finished", f)
 
     def flush(self) -> None:  # pragma: no cover
