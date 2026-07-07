@@ -31,8 +31,13 @@ from ..constants import SHELL_OUTPUT_CAP, SHELL_TIMEOUT_S
 _METACHARS = set(";&|<>$(){}`")
 
 # (4) First-token allowlist (~30 commands).
+# `uv`/`ruff` are here so coders can run the project's own checks
+# (`uv run ruff check .`, `uv run pytest -q`) and self-verify their fixes
+# instead of patching blind — the biggest convergence lever we found. This
+# adds no capability beyond the already-allowlisted `python`/`pip` code-exec
+# hatches (§7.3: speed bump, not a boundary).
 ALLOWLIST: frozenset[str] = frozenset({
-    "python", "python3", "pytest", "pip", "pip3",
+    "python", "python3", "pytest", "pip", "pip3", "uv", "ruff",
     "git", "ls", "cat", "echo", "pwd", "head", "tail", "wc",
     "grep", "find", "sort", "uniq", "diff", "sed", "awk",
     "mkdir", "touch", "mv", "cp", "rm", "node", "npm",

@@ -92,6 +92,24 @@ def test_allowlisted_echo_runs(ws):
     assert r.ok and "hello" in r.output
 
 
+def test_uv_and_ruff_are_allowlisted(ws):
+    # gen-3: the agent must be able to run the project's own checks to self-
+    # verify (previously `uv`/`ruff` were blocked, so repair fixed blind).
+    assert run_shell(ws, "uv --version").ok or "not in allowlist" not in run_shell(ws, "uv --version").output
+    for cmd in ("uv run ruff check .", "uv run pytest -q", "ruff check ."):
+        r = run_shell(ws, cmd)
+        # Not blocked by the allowlist/guards (the command itself may fail to
+        # find uv/ruff on PATH in CI — that's a FileNotFoundError, not a refusal).
+        assert "not in allowlist" not in r.output, cmd
+        assert "refused" not in r.output, cmd
+
+
+def test_uv_run_still_blocks_metachars(ws):
+    # `uv run x && y` must still be refused — the metachar layer is unchanged.
+    r = run_shell(ws, "uv run ruff check . && uv run pytest -q")
+    assert not r.ok and "metacharacters" in r.output
+
+
 def test_output_capped(ws):
     # 'yes' isn't allowlisted; use python? denied -c. Use seq-free: cat a big file.
     big = "x" * 50000

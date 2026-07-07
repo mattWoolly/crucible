@@ -77,8 +77,16 @@ class Orchestrator:
                 task=(
                     "The project verify command FAILED. Fix the code so it "
                     "passes. Do NOT delete or weaken tests merely to make them "
-                    "pass — fix the underlying cause. Verify output:\n"
-                    f"{vres.output}"
+                    "pass — fix the underlying cause.\n"
+                    "Self-verify with run_shell as you work — run these as "
+                    "SEPARATE commands (chaining with && is blocked):\n"
+                    "  uv run ruff check .\n"
+                    "  uv run pytest -q\n"
+                    "Re-run them after edits to confirm each fix actually lands. "
+                    "If a test fails with ModuleNotFoundError, add the missing "
+                    "package to pyproject.toml dependencies (a clean `uv sync` "
+                    "must reproduce the passing suite).\n"
+                    f"Verify output:\n{vres.output}"
                 ),
             )
             # run_worker emits subtask_started/subtask_finished itself — don't

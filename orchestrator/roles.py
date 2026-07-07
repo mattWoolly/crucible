@@ -39,7 +39,10 @@ ROLE_PROMPTS: dict[str, str] = {
     ),
     CODER: (
         "You are the CODER. Make the change with read_file/write_file/list_files, "
-        "then VERIFY it with run_shell (run the tests or a linter) whenever possible. "
+        "then VERIFY with run_shell. For a uv/Python project self-check with "
+        "`uv run ruff check .` and `uv run pytest -q` (SEPARATE commands — `&&` "
+        "is blocked); re-run after edits to confirm fixes land. Declare any new "
+        "third-party import in pyproject.toml so a clean install reproduces. "
         "Report what you changed and the verification result. " + _JSON_CONTRACT
     ),
     SYNTHESIZER: (
