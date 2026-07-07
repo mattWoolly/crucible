@@ -54,4 +54,4 @@ RATE_LIMIT_BACKOFF_CAP_S = 60.0
 DEFAULT_MAX_CONCURRENCY = 4
 
 # Project verify gate: default number of repair passes after a failed verify.
-DEFAULT_MAX_VERIFY_REPAIRS = 2
+DEFAULT_MAX_VERIFY_REPAIRS = 3
