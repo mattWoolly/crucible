@@ -242,6 +242,41 @@ async def test_verify_gate_repairs_then_passes(tmp_path):
     assert len(repair_starts) == 1
 
 
+async def test_verify_repair_threads_context_across_passes(tmp_path):
+    # gen-4: pass 2 must CONTINUE pass 1's message history (persistent session),
+    # not cold-start. We detect this by checking the coder's 2nd repair call
+    # carries the 1st pass's messages.
+    seen_message_counts = []
+
+    class _CountingLLM:
+        def __init__(self, inner):
+            self.inner = inner
+            self.calls = inner.calls
+
+        async def complete(self, messages, tools=None, temperature=0.2):
+            role = next((m.get("_role") for m in messages if m.get("_role")), None)
+            if role == "coder":
+                seen_message_counts.append(len(messages))
+            return await self.inner.complete(messages, tools=tools, temperature=temperature)
+
+    fake = FakeLLMClient({
+        "planner": [llm_response(_plan_one_coder())],
+        "coder": [_wr("c") for _ in range(6)],
+        "synthesizer": [_wr("merged")],
+        "critic": [_approve()],
+    })
+    verifier = _FakeVerifier(fail_times=99)
+    orch = Orchestrator(_CountingLLM(fake), _config(tmp_path, max_verify_repairs=2),
+                        verifier=verifier)
+    report = await orch.run("task")
+    assert report.verified is False
+    # coder calls: c1 (build), repair pass1 (cold), repair pass2 (continued).
+    # The continued pass carries MORE messages than the cold pass1 (prior
+    # history + new feedback), proving context threading.
+    repair_calls = seen_message_counts[-2:]
+    assert repair_calls[1] > repair_calls[0], seen_message_counts
+
+
 async def test_verify_gate_exhausts_repairs_reports_unverified(tmp_path):
     fake = FakeLLMClient({
         "planner": [llm_response(_plan_one_coder())],

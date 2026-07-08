@@ -258,3 +258,24 @@ async def revise_worker(
     )
     messages.append({"role": "user", "content": feedback})
     return await _run_loop(llm, role, subtask.id, messages, config, observer, budget)
+
+
+async def continue_worker(
+    llm: LLMClient,
+    role: str,
+    subtask_id: str,
+    prior_messages: list[dict],
+    feedback: str,
+    config: Config,
+    observer: Observer | None = None,
+    budget: Budget | None = None,
+) -> WorkerOutput:
+    """Resume a worker's PRIOR message history with new feedback appended.
+
+    Unlike ``run_worker`` (which cold-starts), this keeps the accumulated
+    context so a multi-pass loop behaves like one persistent session rather
+    than N amnesiac attempts — the key to debugging many interrelated failures
+    (verify-repair loop)."""
+    messages = list(prior_messages)
+    messages.append({"role": "user", "content": feedback})
+    return await _run_loop(llm, role, subtask_id, messages, config, observer, budget)

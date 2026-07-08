@@ -33,7 +33,13 @@ from .plan_validation import validate_plan
 from .redaction import redact_preview
 from .roles import system_prompt
 from .synthesizer import run_synthesis
-from .worker import WorkerOutput, revise_worker, run_worker, workspace_orientation
+from .worker import (
+    WorkerOutput,
+    continue_worker,
+    revise_worker,
+    run_worker,
+    workspace_orientation,
+)
 
 # Injected ground-truth gate: given the workspace path, run the project's own
 # checks (e.g. ruff + pytest) and report whether they pass. Async so a real
@@ -63,39 +69,55 @@ class Orchestrator:
 
         The final workspace state is either verified green or the run reports
         ``verified=False`` honestly — no more rubber-stamped 'done'."""
+        _SELF_VERIFY = (
+            "Self-verify with run_shell as you work — run these as SEPARATE "
+            "commands (chaining with && is blocked):\n"
+            "  uv run ruff check .\n"
+            "  uv run pytest -q\n"
+            "Re-run them after edits to confirm each fix actually lands. If a "
+            "test fails with ModuleNotFoundError, add the missing package to "
+            "pyproject.toml dependencies (a clean `uv sync` must reproduce the "
+            "passing suite). Do NOT delete or weaken tests to pass — fix the "
+            "underlying cause."
+        )
         vres = await self.verifier(self.config.workspace)
         safe(self.observer, "verify", attempt=0, passed=vres.passed,
              output_preview=redact_preview(vres.output))
         attempt = 0
+        prior_messages: list[dict] | None = None
         while not vres.passed and attempt < self.config.max_verify_repairs:
             if budget.exhausted():
                 break
             attempt += 1
-            repair = Subtask(
-                id=f"verify_repair_{attempt}",
-                role=CODER,
-                task=(
-                    "The project verify command FAILED. Fix the code so it "
-                    "passes. Do NOT delete or weaken tests merely to make them "
-                    "pass — fix the underlying cause.\n"
-                    "Self-verify with run_shell as you work — run these as "
-                    "SEPARATE commands (chaining with && is blocked):\n"
-                    "  uv run ruff check .\n"
-                    "  uv run pytest -q\n"
-                    "Re-run them after edits to confirm each fix actually lands. "
-                    "If a test fails with ModuleNotFoundError, add the missing "
-                    "package to pyproject.toml dependencies (a clean `uv sync` "
-                    "must reproduce the passing suite).\n"
-                    f"Verify output:\n{vres.output}"
-                ),
-            )
-            # run_worker emits subtask_started/subtask_finished itself — don't
-            # double-emit here.
-            out = await run_worker(
-                self.llm, CODER, repair, {}, self.config, self.observer, budget
-            )
-            results[repair.id] = out.result
-            scores[repair.id] = CriticScore.failed_validation()
+            repair_id = f"verify_repair_{attempt}"
+            if prior_messages is None:
+                # First pass: cold-start a coder with full orientation + output.
+                repair = Subtask(
+                    id=repair_id, role=CODER,
+                    task=("The project verify command FAILED. Fix the code so it "
+                          f"passes.\n{_SELF_VERIFY}\n\nVerify output:\n{vres.output}"),
+                )
+                out = await run_worker(  # emits its own subtask_started/finished
+                    self.llm, CODER, repair, {}, self.config, self.observer, budget
+                )
+            else:
+                # Later passes: CONTINUE the same debugging session so the coder
+                # keeps everything it already learned (gen-4: persistent session,
+                # not amnesiac cold-starts).
+                feedback = ("verify STILL FAILS after your last changes. Keep going "
+                            f"— fix the remaining failures.\n{_SELF_VERIFY}\n\n"
+                            f"Current verify output:\n{vres.output}")
+                safe(self.observer, "subtask_started", subtask_id=repair_id,
+                     role=CODER, task="verify repair (continued)", dependency_ids=[])
+                out = await continue_worker(
+                    self.llm, CODER, repair_id, prior_messages, feedback,
+                    self.config, self.observer, budget,
+                )
+                safe(self.observer, "subtask_finished", subtask_id=repair_id,
+                     role=CODER, summary=out.result.summary, confidence=out.result.confidence)
+            prior_messages = out.messages
+            results[repair_id] = out.result
+            scores[repair_id] = CriticScore.failed_validation()
             bump()
             vres = await self.verifier(self.config.workspace)
             safe(self.observer, "verify", attempt=attempt, passed=vres.passed,
