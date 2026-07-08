@@ -284,9 +284,14 @@ reliability lever of the entire project — bigger than any one gate or prompt f
 
 ## Open threads / next evolutions
 
-- **Bake in the two-phase workflow:** after a `verified=FAIL` build, have the
-  driver auto-launch repair-continuation run(s) until green or a cap. Turns
-  "produce a green build" into a hands-off pipeline (proposed gen-6).
+- **Bake in the two-phase workflow — ✅ implemented (code), live-validation
+  pending.** The driver now auto-launches repair-continuation run(s) after a
+  `verified=FAIL` build via `--auto-repair` / `--max-repair-runs`
+  (`_auto_repair_loop` in `run_musa.py`, hermetically TDD'd in
+  `tests/test_auto_repair.py`). Each phase stays a separate `run()` with its own
+  budget — the separation that makes it work — continuing the persistent
+  workspace. Still to do: one live M3 run to confirm build→auto-repair→green
+  end-to-end from a clean checkout, then record the gen-6 row above.
 - **Observability:** the trace truncates verify output before pytest's summary
   line — widen it so the per-pass failure trajectory is visible.
 - **Repair strategy:** "fix one failure, re-run, repeat" vs. batch — untested.
