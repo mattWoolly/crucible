@@ -212,21 +212,31 @@ preserved, not merged. Hermetically TDD'd (`tests/test_auto_repair.py`, 6 tests:
 stop-on-green, cap, multi-repair-then-green, and the three no-op cases).
 
 **Live run (M3, 600-call budget, `--auto-repair --max-repair-runs 3`):** the
-**build phase reached `verified=PASS` on its own** (81 files, 23 iterations,
-22.5M tokens) — so auto-repair correctly **did not fire** (the loop skips a
-build that's already green). Confirmed from a **clean checkout**: fresh
-`uv sync`, `ruff` clean, **147 tests pass**, deps declared → reproducible.
+build finished `verified=PASS` (81 files, 22.5M tokens) — so the **outer**
+auto-repair correctly **did not fire** (the loop skips a build that's already
+green). Confirmed from a **clean checkout**: fresh `uv sync`, `ruff` clean,
+**147 tests pass**, deps declared → reproducible.
 
-**Two honest caveats:** (1) This is the *first from-scratch M3 build to reach
-green directly* — but it's **one run**, and variance is real (§gen-1 showed 31
-vs 51 files from the same seed). It doesn't overturn "separate build from
-repair"; it's consistent with it — auto-repair is the safety net for the common
-case where the build *doesn't* land green, and here the net simply wasn't
-needed. (2) Because the build passed, the loop's **firing** path wasn't
-exercised on a *real* failed build this run — that path is covered
-hermetically, and its wiring (skip-when-green, per-phase commit) is now proven
-live, but a live failed-build → repair → green trajectory is still worth
-capturing on the next non-lucky run.
+**But read the trace before calling this a gen-6 win — it isn't, quite.** The
+build did **not** land green one-shot; its **inner** verify-repair loop (gen-3/4
+machinery, `max_verify_repairs=10`) ground through **9 verify passes** to get
+there — `FAIL×3 (ruff RUF046) → ruff clears, pytest still red ×2 → ruff
+re-breaks as new files land (I001, B007, RUF002) → PASS on pass 9/10`, right at
+the edge of the inner budget. So what actually closed the gap was the **larger
+600-call budget letting the pre-existing inner loop finish**, not anything new
+in gen-6. The gen-6 mutation (the *outer* auto-repair) was armed and idle.
+
+**What this run does and doesn't show.** *Does:* the two-phase pipeline runs
+end-to-end, bare seed → green, in one hands-off command with the safety net
+armed (an operational win over gen-5's manual two-step). *Doesn't:* any
+reliability/quality improvement attributable to gen-6 itself — the terminal
+metric (green from clean checkout) is identical to gen-5, and the outer loop
+never fired. It also usefully bounds the gen-5 lesson: with a generous enough
+build budget the inner loop alone can converge a from-scratch build; the outer
+build/repair split matters most when the build budget is too tight for the inner
+loop to finish (exactly the starvation gen-5 diagnosed). **To observe a gen-6
+win you need a `verified=FAIL` build where the outer auto-repair drives it
+green** — one high-variance run away, since gen6-a's build converged internally.
 
 ---
 
@@ -247,8 +257,11 @@ capturing on the next non-lucky run.
 | **repair-e1** | **M3** | **5** | (evo-e) | 36 | **0** | **green** | **7.0M** | **PASS ✅** |
 | **gen6-a** | **M3** | **6** | 81 | — | **0** | **147 pass** | **22.5M** | **PASS ✅** |
 
-\* not reproducible — polluted venv. gen6-a: green in the **build** phase alone
-(auto-repair armed but not needed); verified from a clean checkout.
+\* not reproducible — polluted venv. gen6-a: green within a single build run —
+its **inner** verify-repair loop converged at pass 9/10; the **outer**
+auto-repair never fired. Verified from a clean checkout. Same terminal outcome
+as gen-5 (both PASS); gen-6's gain is operational (one-command pipeline), not a
+metric jump.
 
 ---
 
