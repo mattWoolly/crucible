@@ -202,6 +202,32 @@ before repair could finish. The model could always close the gap; it just needed
 the **build phase and the repair phase separated.** This is the single biggest
 reliability lever of the entire project — bigger than any one gate or prompt fix.
 
+### Gen 6 (gen6-a) — the two-phase recipe, baked in
+**Mutation** (driver `acce247`): automate gen-5's winning recipe. `--auto-repair`
+turns "produce a green build" into one command — after a `verified=FAIL` build,
+`_auto_repair_loop` continues the **repair** brief against the same committed
+workspace until green or `--max-repair-runs`. Each phase stays a **separate
+`Orchestrator.run()` with its own budget** — the build/repair separation is
+preserved, not merged. Hermetically TDD'd (`tests/test_auto_repair.py`, 6 tests:
+stop-on-green, cap, multi-repair-then-green, and the three no-op cases).
+
+**Live run (M3, 600-call budget, `--auto-repair --max-repair-runs 3`):** the
+**build phase reached `verified=PASS` on its own** (81 files, 23 iterations,
+22.5M tokens) — so auto-repair correctly **did not fire** (the loop skips a
+build that's already green). Confirmed from a **clean checkout**: fresh
+`uv sync`, `ruff` clean, **147 tests pass**, deps declared → reproducible.
+
+**Two honest caveats:** (1) This is the *first from-scratch M3 build to reach
+green directly* — but it's **one run**, and variance is real (§gen-1 showed 31
+vs 51 files from the same seed). It doesn't overturn "separate build from
+repair"; it's consistent with it — auto-repair is the safety net for the common
+case where the build *doesn't* land green, and here the net simply wasn't
+needed. (2) Because the build passed, the loop's **firing** path wasn't
+exercised on a *real* failed build this run — that path is covered
+hermetically, and its wiring (skip-when-green, per-phase commit) is now proven
+live, but a live failed-build → repair → green trajectory is still worth
+capturing on the next non-lucky run.
+
 ---
 
 ## The numbers
@@ -219,8 +245,10 @@ reliability lever of the entire project — bigger than any one gate or prompt f
 | evo-e | M3 | 4 | ~50 | **93** | 15 | few | 12.5M | FAIL |
 | evo-f | M3 | 4 | ~55 | 58 | 11 | 20 fail | 20.1M | FAIL |
 | **repair-e1** | **M3** | **5** | (evo-e) | 36 | **0** | **green** | **7.0M** | **PASS ✅** |
+| **gen6-a** | **M3** | **6** | 81 | — | **0** | **147 pass** | **22.5M** | **PASS ✅** |
 
-\* not reproducible — polluted venv.
+\* not reproducible — polluted venv. gen6-a: green in the **build** phase alone
+(auto-repair armed but not needed); verified from a clean checkout.
 
 ---
 
@@ -280,18 +308,18 @@ reliability lever of the entire project — bigger than any one gate or prompt f
   commits, 5 hermetic verifier tests.
 - **musa (green, model-built):** `~/projects/musa-evo-e` — `verified=PASS`,
   reproducible from clean checkout (commit `ea67965`).
+- **musa (green, gen-6 one-command build):** `~/projects/musa-gen6-a` — tag
+  `green-gen6`, green in the build phase alone, verified from clean checkout.
 - **Also green (hand-finished M3 build):** `~/projects/musa-test-m3`.
 
 ## Open threads / next evolutions
 
-- **Bake in the two-phase workflow — ✅ implemented (code), live-validation
-  pending.** The driver now auto-launches repair-continuation run(s) after a
-  `verified=FAIL` build via `--auto-repair` / `--max-repair-runs`
-  (`_auto_repair_loop` in `run_musa.py`, hermetically TDD'd in
-  `tests/test_auto_repair.py`). Each phase stays a separate `run()` with its own
-  budget — the separation that makes it work — continuing the persistent
-  workspace. Still to do: one live M3 run to confirm build→auto-repair→green
-  end-to-end from a clean checkout, then record the gen-6 row above.
+- **Bake in the two-phase workflow — ✅ done (gen-6).** `--auto-repair` /
+  `--max-repair-runs` in `run_musa.py` (`_auto_repair_loop`, hermetically
+  TDD'd). Live-validated: gen6-a reached `verified=PASS`, green from a clean
+  checkout (`green-gen6` tag). One follow-up worth capturing: a live run where
+  the build *fails* and auto-repair actually fires to green (gen6-a's build
+  passed directly, so the firing path was only exercised hermetically).
 - **Observability:** the trace truncates verify output before pytest's summary
   line — widen it so the per-pass failure trajectory is visible.
 - **Repair strategy:** "fix one failure, re-run, repeat" vs. batch — untested.
