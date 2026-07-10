@@ -156,6 +156,19 @@ def _check_argument_guards(argv: list[str]) -> str | None:
                 return f"xargs launches non-allowlisted program {tok!r}"
             break
 
+    # Reproducibility guard: ad-hoc installs put a package in the venv WITHOUT
+    # declaring it in pyproject.toml, so a clean `uv sync` won't reproduce the
+    # pass — the gen-1 non-reproducible-green trap (§ EVOLUTION). Steer to
+    # `uv add`, which records the dep. `uv sync`/`uv run`/`uv add` stay allowed.
+    def _first_positional(tokens: list[str]) -> str | None:
+        return next((t for t in tokens if not t.startswith("-")), None)
+
+    _ADD_HINT = "use `uv add <pkg>` so the dep is declared and a clean install reproduces"
+    if cmd in ("pip", "pip3") and _first_positional(rest) == "install":
+        return f"ad-hoc `pip install` doesn't declare the dependency — {_ADD_HINT}"
+    if cmd == "uv" and rest[:1] == ["pip"] and _first_positional(rest[1:]) == "install":
+        return f"ad-hoc `uv pip install` doesn't declare the dependency — {_ADD_HINT}"
+
     # Interpreter inline-code hatch (python -c, node -e, bash -c, ...).
     if cmd in _DENY_INTERP_INLINE:
         for tok in rest:

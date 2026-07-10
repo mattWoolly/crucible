@@ -156,6 +156,43 @@ def test_uv_run_python_script_allowed(ws):
     assert "inline code" not in r.output and "metacharacters" not in r.output
 
 
+# --- reproducibility: ad-hoc installs (undeclared deps) are steered to uv add -
+
+def test_pip_install_denied_steers_to_uv_add(ws):
+    r = run_shell(ws, "pip install librosa")
+    assert not r.ok and "uv add" in r.output
+
+
+def test_pip_install_denied_even_with_flags(ws):
+    r = run_shell(ws, "pip install --quiet numpy")
+    assert not r.ok and "uv add" in r.output
+
+
+def test_uv_pip_install_denied_steers_to_uv_add(ws):
+    r = run_shell(ws, "uv pip install soundfile")
+    assert not r.ok and "uv add" in r.output
+
+
+def test_uv_add_is_allowed(ws):
+    # The declared-dep path is NOT refused (may fail to reach the network in CI,
+    # but that's an exec failure, not a guard rejection).
+    r = run_shell(ws, "uv add numpy")
+    assert "refused" not in r.output
+
+
+def test_uv_sync_and_uv_run_not_blocked_by_install_guard(ws):
+    for cmd in ("uv sync", "uv run pytest -q", "uv run ruff check ."):
+        r = run_shell(ws, cmd)
+        assert "uv add" not in r.output, cmd  # not misfired as an install
+        assert "refused" not in r.output, cmd
+
+
+def test_pip_non_install_subcommands_allowed(ws):
+    # `pip list` / `pip --version` are read-only and must not be steered.
+    r = run_shell(ws, "pip list")
+    assert "uv add" not in r.output
+
+
 def test_output_capped(ws):
     # 'yes' isn't allowlisted; use python? denied -c. Use seq-free: cat a big file.
     big = "x" * 50000

@@ -46,9 +46,10 @@ ROLE_PROMPTS: dict[str, str] = {
         "(`python -c`, `uv run python -c`) is blocked — write a small script and "
         "`uv run python check.py` instead. Self-check with `uv run ruff check .` "
         "and `uv run pytest -q` (separate calls); re-run after edits to confirm "
-        "fixes land. Declare any new third-party import in pyproject.toml so a "
-        "clean install reproduces. Report what you changed and the verification "
-        "result. " + _JSON_CONTRACT
+        "fixes land. Add any new third-party dependency with `uv add <pkg>` (it "
+        "records the dep in pyproject.toml) — never ad-hoc `pip install`, which "
+        "won't reproduce from a clean install. Report what you changed and the "
+        "verification result. " + _JSON_CONTRACT
     ),
     SYNTHESIZER: (
         "You are the SYNTHESIZER. Merge the worker outputs into one final answer. Do "
