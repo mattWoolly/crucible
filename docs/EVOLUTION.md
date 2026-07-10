@@ -240,6 +240,51 @@ green** — one high-variance run away, since gen6-a's build converged internall
 
 ---
 
+## Phase D — Cross-model portability: a second model reaches green (z.ai GLM-5.2)
+
+Everything above was MiniMax. The question Phase D answers: **is the harness
+model-agnostic in practice, or MiniMax-tuned by accident?** Added a `PROVIDERS`
+registry in the driver (one dict entry per OpenAI-compatible backend; provider
+inferred from the model name) and pointed it at **z.ai's GLM Coding Plan**
+(`glm-5.2`, endpoint `api.z.ai/api/coding/paas/v4`). A one-call `smoke_model.py`
+preflight confirms endpoint+auth+model for cents before a real build.
+
+**Result: GLM-5.2 reached `verified=PASS`, green from a clean checkout** (37
+files, ruff clean, 82 tests; tag `green-glm-5.2`). Trajectory: a from-scratch
+build landed `verified=FAIL` (38 files, confidence 0.10), then a **repair-
+continuation** (continue-don't-rebuild, the gen-5 recipe) closed it to green —
+verify `FAIL → PASS` in 2 passes, ~98 llm_calls / 2M tokens. This is the first
+model *outside the MiniMax family* to drive the harness end-to-end, and it
+cleared the same planner hurdle M2 failed (valid DAG first try).
+
+**Two findings the run surfaced:**
+
+1. **The stalled-provider wedge (fixed).** GLM-5.2's *first* attempt hung 16+ min
+   in the repair phase — blocked in `ep_poll` on an open socket to z.ai, having
+   already blown past the 2h `run_timeout_s`. Root cause: `OpenAIClient` built
+   `AsyncOpenAI` with **no request timeout**, and the run budget is only checked
+   *between* operations, so a single hung network read is never interrupted; the
+   SDK's hidden internal retries stacked timeout cycles silently. **Fix** (engine
+   `69cf3f2`): a per-request timeout (300s) + `max_retries=0` so our own logged
+   backoff is the single retry authority — a stall now raises a retryable
+   `APITimeoutError` and recovers, or surfaces a bounded `LLMError` instead of
+   hanging forever. Provider-agnostic; MiniMax simply never stalled this way.
+   The retry after the fix got past the exact call that hung in ~57s.
+
+2. **GLM-5.2 is slow and shell-chatty on this harness.** Its from-scratch build
+   took **~2.5h** (vs M3's ~40 min for a comparable one), partly thrashing on
+   **shell-metacharacter refusals** — it favors compound `;`/`>`/`{}` commands
+   the sandbox rejects, burning tool calls re-trying. Untested cheap mutation:
+   a shell-style hint in the coder prompt ("run commands separately; no
+   `;`/`&&`/redirects"). The *repair* phase, by contrast, was fast and cheap.
+
+**What Phase D proves:** the reliability levers found on MiniMax — ground-truth
+gates, give-the-agent-sight, separate-build-from-repair, continue-don't-rebuild
+— **transfer to a different model family unchanged**. The harness is the
+product, not the model.
+
+---
+
 ## The numbers
 
 | Run | Model | Gen | Files | Self-checks | ruff | pytest | Tokens | verified |
@@ -256,6 +301,8 @@ green** — one high-variance run away, since gen6-a's build converged internall
 | evo-f | M3 | 4 | ~55 | 58 | 11 | 20 fail | 20.1M | FAIL |
 | **repair-e1** | **M3** | **5** | (evo-e) | 36 | **0** | **green** | **7.0M** | **PASS ✅** |
 | **gen6-a** | **M3** | **6** | 81 | — | **0** | **147 pass** | **22.5M** | **PASS ✅** |
+| glm build | GLM-5.2 | D | 38 | — | — | fail | ~2.5h | FAIL |
+| **glm repair** | **GLM-5.2** | **D** | 37 | — | **0** | **82 pass** | **2.0M** | **PASS ✅** |
 
 \* not reproducible — polluted venv. gen6-a: green within a single build run —
 its **inner** verify-repair loop converged at pass 9/10; the **outer**
@@ -315,14 +362,19 @@ metric jump.
 
 ## Milestone state (2026-07-08)
 
-- **Engine:** 133 tests green; 8 substantive reliability mutations since the
-  115-test baseline (see `git log`: `ebd576b` → `8c1ab76`).
-- **Driver:** verify gate, per-model flag, rate-limit resilience, crash-safe
-  commits, 5 hermetic verifier tests.
+- **Engine:** 135 tests green; 9 substantive reliability mutations since the
+  115-test baseline (see `git log`: `ebd576b` → `69cf3f2`, incl. the per-request
+  timeout that stops a stalled provider from wedging a run).
+- **Driver:** verify gate, multi-provider registry (MiniMax + z.ai GLM),
+  gen-6 auto-repair, rate-limit resilience, crash-safe commits, one-call
+  provider preflight; 21 hermetic tests.
 - **musa (green, model-built):** `~/projects/musa-evo-e` — `verified=PASS`,
   reproducible from clean checkout (commit `ea67965`).
 - **musa (green, gen-6 one-command build):** `~/projects/musa-gen6-a` — tag
   `green-gen6`, green in the build phase alone, verified from clean checkout.
+- **musa (green, GLM-5.2 / z.ai):** `~/projects/musa-glm-a` — tag
+  `green-glm-5.2`, build→repair-continuation to green, verified from clean
+  checkout. First non-MiniMax model to reach green.
 - **Also green (hand-finished M3 build):** `~/projects/musa-test-m3`.
 
 ## Open threads / next evolutions
