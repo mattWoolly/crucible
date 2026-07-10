@@ -283,6 +283,29 @@ gates, give-the-agent-sight, separate-build-from-repair, continue-don't-rebuild
 — **transfer to a different model family unchanged**. The harness is the
 product, not the model.
 
+### Phase D2 (glm-b) — validating the harness improvements live, and the first auto-repair firing
+
+Re-ran GLM-5.2 from a fresh seed with four new mutations in place (per-request
+timeout `69cf3f2`, quote-aware shell guard `805bb05`, tail-kept verify trace
+`d31639b`, ad-hoc-install guard `9c145a5`) and `--auto-repair` on. Results:
+
+- **The outer auto-repair loop fired and reached green — the first time.** Build
+  `verified=FAIL` (55 files, a `DecodeError`); `_auto_repair_loop` ran repair-1
+  against the same workspace → **`verified=PASS`** on the first repair run.
+  Confirmed from a clean checkout: ruff clean, **244 passed, 1 skipped**; tag
+  `green-glm-5.2-b`. This is the live *build→outer-repair→green* trajectory
+  gen6-a never produced (its build converged internally).
+- **Shell friction ~halved:** refusals **7% → 3%** (20/501 vs 28/399). The
+  quote-aware guard + coder note did what the trace evidence predicted.
+- **No ad-hoc installs; deps declared** → reproducible green (the guard held).
+- **A bug the run surfaced (fixed `b4cab3e`/`8cade00`):** the repair phase's
+  trace was empty — `run()` ends with `observer.flush()`, and the JSONL
+  observer *closed* the file on flush, so gen-6's second `run()` (sharing one
+  observer) wrote to a closed stream. flush() now persists without closing;
+  close() is a separate end-of-life call the driver makes once. Fittingly, the
+  first firing of the gen-6 loop is what exposed a latent gen-6 observability
+  bug — evidence-driven to the end.
+
 ---
 
 ## The numbers
@@ -303,6 +326,8 @@ product, not the model.
 | **gen6-a** | **M3** | **6** | 81 | — | **0** | **147 pass** | **22.5M** | **PASS ✅** |
 | glm build | GLM-5.2 | D | 38 | — | — | fail | ~2.5h | FAIL |
 | **glm repair** | **GLM-5.2** | **D** | 37 | — | **0** | **82 pass** | **2.0M** | **PASS ✅** |
+| glm-b build | GLM-5.2 | D2 | 55 | — | — | fail (DecodeError) | 9.9M | FAIL |
+| **glm-b auto-repair** | **GLM-5.2** | **D2** | 55 | — | **0** | **244 pass** | **3.1M** | **PASS ✅** |
 
 \* not reproducible — polluted venv. gen6-a: green within a single build run —
 its **inner** verify-repair loop converged at pass 9/10; the **outer**
@@ -362,11 +387,12 @@ metric jump.
 
 ## Milestone state (2026-07-08)
 
-- **Engine:** 150 tests green; 12 substantive reliability mutations since the
-  115-test baseline (see `git log`: `ebd576b` → `9c145a5`, incl. the per-request
+- **Engine:** 152 tests green; 13 substantive reliability mutations since the
+  115-test baseline (see `git log`: `ebd576b` → `b4cab3e`, incl. the per-request
   timeout that stops a stalled provider wedging a run, a quote-aware shell guard,
-  tail-kept verify output in the trace, and a source-level guard against ad-hoc
-  installs that would break reproducibility).
+  tail-kept verify output in the trace, a source-level guard against ad-hoc
+  installs, and the flush-doesn't-close fix so gen-6 repair phases keep their
+  trace).
 - **Driver:** verify gate, multi-provider registry (MiniMax + z.ai GLM),
   gen-6 auto-repair, rate-limit resilience, crash-safe commits, one-call
   provider preflight; 21 hermetic tests.
@@ -377,6 +403,9 @@ metric jump.
 - **musa (green, GLM-5.2 / z.ai):** `~/projects/musa-glm-a` — tag
   `green-glm-5.2`, build→repair-continuation to green, verified from clean
   checkout. First non-MiniMax model to reach green.
+- **musa (green, GLM-5.2, one-command auto-repair):** `~/projects/musa-glm-b` —
+  tag `green-glm-5.2-b`, build→**outer auto-repair**→green (244 tests), verified
+  from clean checkout. First live firing of the gen-6 loop.
 - **Also green (hand-finished M3 build):** `~/projects/musa-test-m3`.
 
 ## Open threads / next evolutions
@@ -395,9 +424,8 @@ metric jump.
   build tool_calls on shell metacharacters. Made the metachar guard *quote-aware*
   (operators outside quotes still blocked; quoted literals like
   `git commit -m "x (v1)"` now allowed) and added a concrete coder shell note.
-  Validated against the 28 real refusals: the 3 legit ones now pass, 25 operator/
-  inline-code cases stay blocked. The prompt note (the lever for those 25) is
-  unproven until a live GLM run.
+  Validated against the 28 real refusals AND live: glm-b's refusal rate fell
+  **7% → 3%**, confirming the prompt note + guard together cut the thrashing.
 - **Stalled-provider timeout — ✅ done (`69cf3f2`, Phase D).** Per-request
   timeout so a hung provider can't wedge a run.
 - **Reproducibility trap — ✅ closed at the source (`9c145a5`).** The gen-1
@@ -413,6 +441,12 @@ metric jump.
   a speed bump), *allowing* inline code would cut that friction with no real
   posture change — but it reverses a deliberate guard, so it's a decision, not a
   mechanical fix. Left conservative for now.
+- **Auto-repair firing live — ✅ done (Phase D2, glm-b).** GLM-5.2 build failed,
+  the outer `_auto_repair_loop` fired and reached `verified=PASS` on repair-1
+  (green from clean checkout, tag `green-glm-5.2-b`). The gen-6 loop is now
+  proven end-to-end, not just hermetically.
 - **Repair strategy:** "fix one failure, re-run, repeat" vs. batch — untested.
-- **Auto-repair firing live:** still want a run where the build fails and the
-  *outer* auto-repair loop drives it green (gen6-a converged internally).
+- **Reproducibility gate (runtime clean-env verify):** the source-level
+  ad-hoc-install guard (`9c145a5`) closes the common case; a full clean-env
+  verify pass in the gate (isolated `uv sync`) would close the rest — deferred
+  as it wants live `uv`-behavior validation.
