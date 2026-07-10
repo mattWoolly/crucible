@@ -131,6 +131,75 @@ async def test_openai_client_parses_tool_calls():
     assert resp.tool_calls[0].args == {"path": "a.py"}
 
 
+# --- per-request timeout (a stalled provider must raise, not wedge the run) ---
+
+class _RecordingChat:
+    """Captures the kwargs passed to create() so we can assert timeout is set."""
+
+    def __init__(self):
+        self.seen_kwargs = None
+        self.completions = types.SimpleNamespace(create=self._create)
+
+    async def _create(self, **kwargs):
+        self.seen_kwargs = kwargs
+        msg = types.SimpleNamespace(content="ok", tool_calls=None)
+        return types.SimpleNamespace(
+            choices=[types.SimpleNamespace(message=msg)],
+            usage=types.SimpleNamespace(prompt_tokens=0, completion_tokens=0, total_tokens=0),
+            model="m",
+        )
+
+
+async def test_complete_passes_request_timeout():
+    fake = types.SimpleNamespace(chat=_RecordingChat())
+    client = OpenAIClient(None, None, "m", client=fake, request_timeout_s=42.0)
+    await client.complete([{"role": "user", "content": "hi"}])
+    assert fake.chat.seen_kwargs["timeout"] == 42.0
+
+
+class APITimeoutError(Exception):
+    """Duck-types the openai SDK's APITimeoutError (matched by class name in
+    orchestrator.llm._RETRYABLE_NAMES — the match is exact, so the name matters)."""
+
+
+class _TimeoutThenOKChat:
+    def __init__(self, fail_times):
+        self.fail_times = fail_times
+        self.calls = 0
+        self.completions = types.SimpleNamespace(create=self._create)
+
+    async def _create(self, **kwargs):
+        self.calls += 1
+        if self.calls <= self.fail_times:
+            raise APITimeoutError("request timed out")
+        msg = types.SimpleNamespace(content="recovered", tool_calls=None)
+        return types.SimpleNamespace(
+            choices=[types.SimpleNamespace(message=msg)],
+            usage=types.SimpleNamespace(prompt_tokens=0, completion_tokens=0, total_tokens=0),
+            model="m",
+        )
+
+
+async def test_request_timeout_is_retryable_and_recovers():
+    # A stall (APITimeoutError, named to match _RETRYABLE_NAMES) must be retried
+    # by our own backoff loop rather than wedging or bubbling straight up.
+    fake = types.SimpleNamespace(chat=_TimeoutThenOKChat(fail_times=2))
+
+    async def fake_sleep(_d):
+        return None
+
+    client = OpenAIClient(None, None, "m", client=fake, sleep=fake_sleep)
+    resp = await client.complete([{"role": "user", "content": "hi"}])
+    assert resp.content == "recovered"
+    assert fake.chat.calls == 3  # 2 timeouts + 1 success
+
+    # A persistent stall eventually surfaces as LLMError (bounded, not infinite).
+    fake2 = types.SimpleNamespace(chat=_TimeoutThenOKChat(fail_times=99))
+    client2 = OpenAIClient(None, None, "m", retries=2, client=fake2, sleep=fake_sleep)
+    with pytest.raises(LLMError):
+        await client2.complete([{"role": "user", "content": "hi"}])
+
+
 # --- rate-limit-aware retry + concurrency cap ------------------------------
 class _RateLimited(Exception):
     def __init__(self):

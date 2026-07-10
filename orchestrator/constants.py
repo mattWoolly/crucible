@@ -46,6 +46,13 @@ SHELL_OUTPUT_CAP = 20_000
 # --- LLM client -----------------------------------------------------------
 DEFAULT_LLM_RETRIES = 3
 
+# Per-request timeout (seconds). Without this a stalled provider response wedges
+# the whole run indefinitely: the overall run_timeout_s is only checked BETWEEN
+# operations, so a single hung network read is never interrupted. A real call
+# (even a large reasoning-model plan) returns well under this; a hang trips it,
+# raising a retryable APITimeoutError that the client's own backoff path handles.
+DEFAULT_REQUEST_TIMEOUT_S = 300.0
+
 # Rate-limit handling (429 from a burst of parallel workers): dedicated retry
 # budget with long, capped, jittered backoff; and a cap on concurrent requests.
 DEFAULT_RATE_LIMIT_RETRIES = 6

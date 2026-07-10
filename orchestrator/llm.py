@@ -19,6 +19,7 @@ from .constants import (
     DEFAULT_MAX_CONCURRENCY,
     DEFAULT_RATE_LIMIT_BACKOFF_S,
     DEFAULT_RATE_LIMIT_RETRIES,
+    DEFAULT_REQUEST_TIMEOUT_S,
     RATE_LIMIT_BACKOFF_CAP_S,
 )
 from .errors import LLMError
@@ -102,6 +103,7 @@ class OpenAIClient:
         rate_limit_retries: int = DEFAULT_RATE_LIMIT_RETRIES,
         rate_limit_backoff_base: float = DEFAULT_RATE_LIMIT_BACKOFF_S,
         max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
+        request_timeout_s: float = DEFAULT_REQUEST_TIMEOUT_S,
         client: Any | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
@@ -110,6 +112,7 @@ class OpenAIClient:
         self.backoff_base = backoff_base
         self.rate_limit_retries = rate_limit_retries
         self.rate_limit_backoff_base = rate_limit_backoff_base
+        self.request_timeout_s = request_timeout_s
         self._sem = asyncio.Semaphore(max_concurrency)
         self._sleep = sleep
         if client is not None:
@@ -117,7 +120,14 @@ class OpenAIClient:
         else:  # pragma: no cover - exercised only with a real endpoint
             from openai import AsyncOpenAI
 
-            self._client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+            # timeout: a hung response raises (retryable) instead of wedging.
+            # max_retries=0: our own backoff loop below is the single retry
+            # authority — the SDK's hidden internal retries would otherwise
+            # stack, turning one stalled call into many silent timeout cycles.
+            self._client = AsyncOpenAI(
+                api_key=api_key, base_url=base_url,
+                timeout=request_timeout_s, max_retries=0,
+            )
 
     async def complete(
         self,
@@ -129,6 +139,7 @@ class OpenAIClient:
             "model": self.model,
             "messages": list(messages),
             "temperature": temperature,
+            "timeout": self.request_timeout_s,  # per-call cap so a stall raises, not hangs
         }
         if tools:
             kwargs["tools"] = tools
