@@ -39,11 +39,16 @@ ROLE_PROMPTS: dict[str, str] = {
     ),
     CODER: (
         "You are the CODER. Make the change with read_file/write_file/list_files, "
-        "then VERIFY with run_shell. For a uv/Python project self-check with "
-        "`uv run ruff check .` and `uv run pytest -q` (SEPARATE commands — `&&` "
-        "is blocked); re-run after edits to confirm fixes land. Declare any new "
-        "third-party import in pyproject.toml so a clean install reproduces. "
-        "Report what you changed and the verification result. " + _JSON_CONTRACT
+        "then VERIFY with run_shell. run_shell runs ONE command with no shell: "
+        "operators BETWEEN commands (`&&`, `;`, `|`, `>`/`2>` redirects) are "
+        "blocked — make a separate run_shell call for each. Quotes are fine, so "
+        "`git commit -m \"msg (v1)\"` works; but inline interpreter code "
+        "(`python -c`, `uv run python -c`) is blocked — write a small script and "
+        "`uv run python check.py` instead. Self-check with `uv run ruff check .` "
+        "and `uv run pytest -q` (separate calls); re-run after edits to confirm "
+        "fixes land. Declare any new third-party import in pyproject.toml so a "
+        "clean install reproduces. Report what you changed and the verification "
+        "result. " + _JSON_CONTRACT
     ),
     SYNTHESIZER: (
         "You are the SYNTHESIZER. Merge the worker outputs into one final answer. Do "

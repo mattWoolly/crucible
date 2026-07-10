@@ -3,8 +3,12 @@
 Layered guards, in order of importance:
   1. Run without an intervening shell: ``subprocess.run`` with a tokenized
      argv and ``shell=False``. Metacharacters become inert literals.
-  2. Reject at the source: refuse any command containing shell metacharacters
-     before tokenization (defense in depth on top of 1).
+  2. Reject at the source: refuse commands with shell metacharacters that appear
+     OUTSIDE quotes — i.e. real operator soup (``a && b``, ``x | y``, ``2>f``),
+     defense in depth on top of 1. Metacharacters INSIDE quotes are literal data
+     (``git commit -m "add (v1); done"``, ``grep "foo(bar)"``) and are allowed —
+     blocking them punished legitimate quoted arguments and taught nothing (they
+     are already inert under 1).
   3. Block path traversal: reject ``..`` components, ``~`` prefixes, absolutes.
   4. Allowlist the first token.
   5. Argument-level guards on exec-capable allowlisted commands
@@ -27,8 +31,40 @@ from dataclasses import dataclass
 
 from ..constants import SHELL_OUTPUT_CAP, SHELL_TIMEOUT_S
 
-# (2) Shell metacharacters refused before tokenization.
+# (2) Shell metacharacters refused before tokenization — but only when they
+# appear UNQUOTED (see _unquoted_metachars). Quoted occurrences are literal.
 _METACHARS = set(";&|<>$(){}`")
+
+
+def _unquoted_metachars(command: str) -> str:
+    """Return the sorted metacharacters that appear OUTSIDE single/double quotes.
+
+    A tiny quote-tracking scanner: characters inside matched quotes are literal
+    data and ignored; a backslash escapes the next char except inside single
+    quotes (shell semantics). Unbalanced quotes leave trailing content treated as
+    quoted here — the later ``shlex.split`` rejects those with a tokenize error,
+    so nothing slips through. Good enough for a §7.3 speed bump, not a parser.
+    """
+    found: set[str] = set()
+    quote: str | None = None
+    escaped = False
+    for ch in command:
+        if escaped:
+            escaped = False
+            continue
+        if ch == "\\" and quote != "'":
+            escaped = True
+            continue
+        if quote:
+            if ch == quote:
+                quote = None
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            continue
+        if ch in _METACHARS:
+            found.add(ch)
+    return "".join(sorted(found))
 
 # (4) First-token allowlist (~30 commands).
 # `uv`/`ruff` are here so coders can run the project's own checks
@@ -126,6 +162,20 @@ def _check_argument_guards(argv: list[str]) -> str | None:
             if tok in ("-c", "-e") or tok.startswith("-c") or tok.startswith("-e"):
                 return f"{cmd} {tok} executes inline code"
 
+    # Same hatch one level down: `uv run <interp> -c/-e ...`. Now that quoted
+    # metacharacters are allowed, `uv run python -c "..."` would otherwise slip
+    # past every guard (argv[0] is 'uv', not the interpreter). Keep inline code
+    # consistently denied — write a script and run it instead.
+    if cmd == "uv":
+        interp: str | None = None
+        for tok in rest:
+            if interp is None:
+                if tok in _DENY_INTERP_INLINE:
+                    interp = tok
+                continue
+            if tok in ("-c", "-e") or tok.startswith("-c") or tok.startswith("-e"):
+                return f"uv run {interp} {tok} executes inline code"
+
     return None
 
 
@@ -144,10 +194,13 @@ def run_shell(
         if bad in lowered:
             return _reject(f"deny-pattern: {bad!r}")
 
-    # (2) metacharacter rejection.
-    meta = _METACHARS & set(command)
+    # (2) metacharacter rejection — unquoted operators only (quoted = literal).
+    meta = _unquoted_metachars(command)
     if meta:
-        return _reject(f"shell metacharacters not allowed: {''.join(sorted(meta))}")
+        return _reject(
+            "shell metacharacters not allowed outside quotes "
+            f"(run one command per call; quoting is fine): {meta}"
+        )
 
     # tokenize.
     try:

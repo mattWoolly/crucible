@@ -105,9 +105,55 @@ def test_uv_and_ruff_are_allowlisted(ws):
 
 
 def test_uv_run_still_blocks_metachars(ws):
-    # `uv run x && y` must still be refused — the metachar layer is unchanged.
+    # `uv run x && y` must still be refused — unquoted `&` operator soup.
     r = run_shell(ws, "uv run ruff check . && uv run pytest -q")
     assert not r.ok and "metacharacters" in r.output
+
+
+# --- quote-aware metachar guard: quoted metachars are literal data ----------
+
+def test_quoted_metachars_allowed(ws):
+    # git commit message with parens + semicolon INSIDE quotes: not refused.
+    # (tmp_path isn't a git repo, so git exits non-zero — but it RAN, not refused.)
+    r = run_shell(ws, 'git commit -m "add feature (v1); done"')
+    assert "metacharacters" not in r.output
+    assert "refused" not in r.output
+
+
+def test_quoted_parens_pass_the_metachar_guard(ws):
+    # grep pattern with parens in quotes reaches execution (exit 1 = no match).
+    r = run_shell(ws, 'grep "foo(bar)" a.txt')
+    assert "metacharacters" not in r.output and "refused" not in r.output
+
+
+def test_quoted_semicolon_is_literal_not_a_chain(ws):
+    # echo "a; b" prints the literal string; it is NOT command chaining.
+    r = run_shell(ws, 'echo "a; b"')
+    assert r.ok and "a; b" in r.output
+
+
+def test_unquoted_chain_still_rejected(ws):
+    # The same characters UNQUOTED are operator soup and stay blocked.
+    r = run_shell(ws, "echo a; echo b")
+    assert not r.ok and "metacharacters" in r.output
+
+
+def test_unquoted_redirect_still_rejected(ws):
+    r = run_shell(ws, "ls 2>/dev/null")
+    assert not r.ok and "metacharacters" in r.output
+
+
+def test_uv_run_python_inline_still_blocked(ws):
+    # Quoted code no longer trips the metachar guard, so the arg-guard must catch
+    # `uv run python -c` — inline code stays consistently denied.
+    r = run_shell(ws, 'uv run python -c "print(1)"')
+    assert not r.ok and "inline code" in r.output
+
+
+def test_uv_run_python_script_allowed(ws):
+    # The steered-toward path: run a script file, not inline code.
+    r = run_shell(ws, "uv run python check.py")
+    assert "inline code" not in r.output and "metacharacters" not in r.output
 
 
 def test_output_capped(ws):
