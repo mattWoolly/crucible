@@ -52,6 +52,30 @@ def test_jsonl_persists_verify_event():
     assert rec["passed"] is False and rec["attempt"] == 1
 
 
+def test_jsonl_verify_output_keeps_the_tail():
+    # The pytest summary lives at the END of the output. A verify preview must
+    # keep the tail so "did failures shrink each pass?" is answerable from the
+    # trace — unlike a normal preview, which head-truncates.
+    buf = io.StringIO()
+    obs = JSONLObserver(stream=buf)
+    long_output = ("x" * 6000) + "\n=== 3 failed, 40 passed in 9.1s ==="
+    obs.verify(attempt=2, passed=False, output_preview=long_output)
+    rec = json.loads(buf.getvalue().splitlines()[0])
+    assert "3 failed, 40 passed" in rec["output_preview"]  # summary survived
+    assert len(rec["output_preview"]) < len(long_output)   # still bounded
+
+
+def test_non_verify_preview_still_head_truncates():
+    # A regular event's output_preview keeps the default head behaviour.
+    buf = io.StringIO()
+    obs = JSONLObserver(stream=buf)
+    head_then_tail = "START-MARKER " + ("x" * 4000) + " END-MARKER"
+    obs.llm_call(role="coder", output_preview=head_then_tail)
+    rec = json.loads(buf.getvalue().splitlines()[0])
+    assert "START-MARKER" in rec["output_preview"]
+    assert "END-MARKER" not in rec["output_preview"]
+
+
 def test_jsonl_redacts_secret_in_preview():
     buf = io.StringIO()
     obs = JSONLObserver(stream=buf)

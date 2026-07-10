@@ -60,5 +60,10 @@ DEFAULT_RATE_LIMIT_BACKOFF_S = 10.0
 RATE_LIMIT_BACKOFF_CAP_S = 60.0
 DEFAULT_MAX_CONCURRENCY = 4
 
+# Verify output in the trace: keep a larger TAIL than a normal preview so the
+# ruff/pytest summary line (which lives at the end) is visible per pass — that's
+# what makes "did failures shrink each repair pass?" answerable from the trace.
+VERIFY_PREVIEW_MAX_LEN = 4000
+
 # Project verify gate: default number of repair passes after a failed verify.
 DEFAULT_MAX_VERIFY_REPAIRS = 3

@@ -12,6 +12,7 @@ import os
 import sys
 from typing import Any, TextIO
 
+from .constants import VERIFY_PREVIEW_MAX_LEN
 from .redaction import redact_preview
 
 # Event names (also the Observer method names).
@@ -70,7 +71,7 @@ class JSONLObserver(Observer):
             self._stream = stream or sys.stdout
 
     def _emit(self, event: str, fields: dict) -> None:
-        record = {"event": event, **_redact_fields(fields)}
+        record = {"event": event, **_redact_fields(fields, event)}
         self._stream.write(json.dumps(record, default=str) + "\n")
         self._stream.flush()
 
@@ -96,11 +97,16 @@ class JSONLObserver(Observer):
 _PREVIEW_FIELDS = {"messages_preview", "output_preview", "args", "result_preview", "task"}
 
 
-def _redact_fields(fields: dict) -> dict:
+def _redact_fields(fields: dict, event: str | None = None) -> dict:
     out = {}
     for k, v in fields.items():
         if k in _PREVIEW_FIELDS and isinstance(v, str):
-            out[k] = redact_preview(v)
+            # verify output puts its summary line last — keep a larger TAIL so
+            # the per-pass ruff/pytest result stays visible in the trace.
+            if event == "verify" and k == "output_preview":
+                out[k] = redact_preview(v, max_len=VERIFY_PREVIEW_MAX_LEN, keep="tail")
+            else:
+                out[k] = redact_preview(v)
         elif k in _PREVIEW_FIELDS:
             from .redaction import redact
             out[k] = redact(v)
@@ -128,7 +134,7 @@ class LangfuseObserver(Observer):
     def _send(self, event: str, fields: dict) -> None:  # pragma: no cover
         if not self._ok:
             return
-        self._client.event(name=event, metadata=_redact_fields(fields))
+        self._client.event(name=event, metadata=_redact_fields(fields, event))
 
     def run_started(self, **f): self._send("run_started", f)
     def plan_ready(self, **f): self._send("plan_ready", f)

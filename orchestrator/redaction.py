@@ -49,12 +49,18 @@ def redact(obj, *, field_allowlist: set[str] | None = None):
     return obj
 
 
-def redact_preview(text: str, max_len: int = 1000) -> str:
-    """Truncate then scrub a preview string."""
+def redact_preview(text: str, max_len: int = 1000, keep: str = "head") -> str:
+    """Truncate then scrub a preview string.
+
+    keep="tail" retains the END of the text rather than the start — verify
+    output (ruff/pytest) puts its summary line ("N failed, M passed") last, so
+    a head truncation hides exactly the part you want. Idempotent for a given
+    (max_len, keep): re-redacting an already-tail-kept preview keeps the tail.
+    """
     if text is None:
         return ""
-    truncated = text[:max_len]
-    scrubbed = _scrub_str(truncated)
-    if len(text) > max_len:
-        scrubbed += " …[truncated]"
-    return scrubbed
+    if len(text) <= max_len:
+        return _scrub_str(text)
+    if keep == "tail":
+        return "…[truncated] " + _scrub_str(text[-max_len:])
+    return _scrub_str(text[:max_len]) + " …[truncated]"

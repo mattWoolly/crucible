@@ -22,7 +22,7 @@ from typing import Awaitable, Callable
 from .augmentation import augment_plan
 from .budget import Budget
 from .config import Config
-from .constants import CODER, DEGRADED_CONFIDENCE, SYNTHESIZER
+from .constants import CODER, DEGRADED_CONFIDENCE, SYNTHESIZER, VERIFY_PREVIEW_MAX_LEN
 from .critic import run_critic_loop
 from .errors import LLMError, PlanValidationError
 from .json_extract import extract_json
@@ -82,7 +82,7 @@ class Orchestrator:
         )
         vres = await self.verifier(self.config.workspace)
         safe(self.observer, "verify", attempt=0, passed=vres.passed,
-             output_preview=redact_preview(vres.output))
+             output_preview=redact_preview(vres.output, max_len=VERIFY_PREVIEW_MAX_LEN, keep="tail"))
         attempt = 0
         prior_messages: list[dict] | None = None
         while not vres.passed and attempt < self.config.max_verify_repairs:
@@ -121,7 +121,7 @@ class Orchestrator:
             bump()
             vres = await self.verifier(self.config.workspace)
             safe(self.observer, "verify", attempt=attempt, passed=vres.passed,
-                 output_preview=redact_preview(vres.output))
+                 output_preview=redact_preview(vres.output, max_len=VERIFY_PREVIEW_MAX_LEN, keep="tail"))
         return vres
 
     # -- planning ----------------------------------------------------------
