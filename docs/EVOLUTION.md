@@ -362,10 +362,11 @@ metric jump.
 
 ## Milestone state (2026-07-08)
 
-- **Engine:** 144 tests green; 11 substantive reliability mutations since the
-  115-test baseline (see `git log`: `ebd576b` → `d31639b`, incl. the per-request
+- **Engine:** 150 tests green; 12 substantive reliability mutations since the
+  115-test baseline (see `git log`: `ebd576b` → `9c145a5`, incl. the per-request
   timeout that stops a stalled provider wedging a run, a quote-aware shell guard,
-  and tail-kept verify output in the trace).
+  tail-kept verify output in the trace, and a source-level guard against ad-hoc
+  installs that would break reproducibility).
 - **Driver:** verify gate, multi-provider registry (MiniMax + z.ai GLM),
   gen-6 auto-repair, rate-limit resilience, crash-safe commits, one-call
   provider preflight; 21 hermetic tests.
@@ -399,6 +400,13 @@ metric jump.
   unproven until a live GLM run.
 - **Stalled-provider timeout — ✅ done (`69cf3f2`, Phase D).** Per-request
   timeout so a hung provider can't wedge a run.
+- **Reproducibility trap — ✅ closed at the source (`9c145a5`).** The gen-1
+  non-reproducible-green happened because a coder installed deps ad-hoc into the
+  venv without declaring them. The shell tool now denies `pip install` /
+  `uv pip install` and steers to `uv add` (which records the dep) — so an
+  undeclared dep can't be installed, hence must be declared to pass. Traces
+  confirmed coders really reach for ad-hoc installs. Complements, not replaces,
+  the clean-checkout discipline.
 - **Inline code per §7.3 (candidate).** 9 of GLM's 28 refusals were
   `uv run python -c "import x; print(version)"` dep-checks. Since write_file +
   `python file.py` already gives code-exec (SPEC §7.3 is explicit the sandbox is
