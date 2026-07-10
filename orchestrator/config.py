@@ -39,6 +39,12 @@ class Config:
     # repair). The verifier itself is injected into Orchestrator, not here.
     max_verify_repairs: int = C.DEFAULT_MAX_VERIFY_REPAIRS
 
+    # Repair strategy for the verify-repair loop (§ experiment):
+    #   "batch"       — fix all failures each pass (default; fewer passes).
+    #   "incremental" — fix ONE failure per pass, re-verify, repeat (more passes,
+    #                   hypothesis: converges more reliably on large failure sets).
+    repair_strategy: str = "batch"
+
     def threshold_for(self, role: str) -> float:
         """Per-role threshold override falls back to the base threshold (§6.4, §10)."""
         return self.approval_threshold_by_role.get(role, self.approval_threshold)

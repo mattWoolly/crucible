@@ -75,10 +75,27 @@ class Orchestrator:
             "  uv run ruff check .\n"
             "  uv run pytest -q\n"
             "Re-run them after edits to confirm each fix actually lands. If a "
-            "test fails with ModuleNotFoundError, add the missing package to "
-            "pyproject.toml dependencies (a clean `uv sync` must reproduce the "
-            "passing suite). Do NOT delete or weaken tests to pass — fix the "
-            "underlying cause."
+            "test fails with ModuleNotFoundError, declare the missing package "
+            "with `uv add <pkg>` (never ad-hoc pip install — a clean `uv sync` "
+            "must reproduce the passing suite). Do NOT delete or weaken tests to "
+            "pass — fix the underlying cause."
+        )
+        # Repair strategy (§ experiment): batch fixes everything each pass;
+        # incremental fixes ONE failure then lets the loop re-verify and bring
+        # the next. Same persistent-session loop either way — only the ask differs.
+        incremental = self.config.repair_strategy == "incremental"
+        _ONE_AT_A_TIME = (
+            " STRATEGY — INCREMENTAL: fix EXACTLY ONE failure this turn (the single "
+            "most tractable one, or a shared root cause), verify just that with "
+            "run_shell, then report and STOP. Do NOT attempt the other failures — "
+            "the loop re-runs the checks and brings you the next. Small verified "
+            "steps beat one big blind edit."
+        )
+        goal_first = "The project verify command FAILED. " + (
+            _ONE_AT_A_TIME if incremental else "Fix the code so it passes."
+        )
+        goal_cont = "verify STILL FAILS after your last changes. " + (
+            _ONE_AT_A_TIME if incremental else "Keep going — fix the remaining failures."
         )
         vres = await self.verifier(self.config.workspace)
         safe(self.observer, "verify", attempt=0, passed=vres.passed,
@@ -94,8 +111,7 @@ class Orchestrator:
                 # First pass: cold-start a coder with full orientation + output.
                 repair = Subtask(
                     id=repair_id, role=CODER,
-                    task=("The project verify command FAILED. Fix the code so it "
-                          f"passes.\n{_SELF_VERIFY}\n\nVerify output:\n{vres.output}"),
+                    task=f"{goal_first}\n{_SELF_VERIFY}\n\nVerify output:\n{vres.output}",
                 )
                 out = await run_worker(  # emits its own subtask_started/finished
                     self.llm, CODER, repair, {}, self.config, self.observer, budget
@@ -104,9 +120,7 @@ class Orchestrator:
                 # Later passes: CONTINUE the same debugging session so the coder
                 # keeps everything it already learned (gen-4: persistent session,
                 # not amnesiac cold-starts).
-                feedback = ("verify STILL FAILS after your last changes. Keep going "
-                            f"— fix the remaining failures.\n{_SELF_VERIFY}\n\n"
-                            f"Current verify output:\n{vres.output}")
+                feedback = f"{goal_cont}\n{_SELF_VERIFY}\n\nCurrent verify output:\n{vres.output}"
                 safe(self.observer, "subtask_started", subtask_id=repair_id,
                      role=CODER, task="verify repair (continued)", dependency_ids=[])
                 out = await continue_worker(

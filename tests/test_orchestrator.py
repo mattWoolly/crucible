@@ -242,6 +242,46 @@ async def test_verify_gate_repairs_then_passes(tmp_path):
     assert len(repair_starts) == 1
 
 
+def _repair_prompt(fake):
+    """The task/content the repair coder was handed (the msg with the failure)."""
+    call = next(c for c in fake.calls
+                if c["role"] == "coder"
+                and any("pytest: 2 failed" in m.get("content", "") for m in c["messages"]))
+    return " ".join(m.get("content", "") for m in call["messages"])
+
+
+async def test_repair_strategy_batch_is_the_default(tmp_path):
+    fake = FakeLLMClient({
+        "planner": [llm_response(_plan_one_coder())],
+        "coder": [_wr("wrote code"), _wr("fixed it")],
+        "synthesizer": [_wr("merged")],
+        "critic": [_approve()],
+    })
+    orch = Orchestrator(fake, _config(tmp_path, max_verify_repairs=2),
+                        verifier=_FakeVerifier(fail_times=1))
+    await orch.run("task")
+    prompt = _repair_prompt(fake)
+    assert "Fix the code so it passes" in prompt
+    assert "INCREMENTAL" not in prompt
+
+
+async def test_repair_strategy_incremental_asks_for_one_fix(tmp_path):
+    fake = FakeLLMClient({
+        "planner": [llm_response(_plan_one_coder())],
+        "coder": [_wr("wrote code"), _wr("fixed one")],
+        "synthesizer": [_wr("merged")],
+        "critic": [_approve()],
+    })
+    orch = Orchestrator(fake, _config(tmp_path, max_verify_repairs=2,
+                                      repair_strategy="incremental"),
+                        verifier=_FakeVerifier(fail_times=1))
+    await orch.run("task")
+    prompt = _repair_prompt(fake)
+    assert "INCREMENTAL" in prompt
+    assert "EXACTLY ONE failure" in prompt
+    assert "Fix the code so it passes" not in prompt
+
+
 async def test_verify_repair_threads_context_across_passes(tmp_path):
     # gen-4: pass 2 must CONTINUE pass 1's message history (persistent session),
     # not cold-start. We detect this by checking the coder's 2nd repair call
