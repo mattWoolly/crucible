@@ -362,9 +362,10 @@ metric jump.
 
 ## Milestone state (2026-07-08)
 
-- **Engine:** 135 tests green; 9 substantive reliability mutations since the
-  115-test baseline (see `git log`: `ebd576b` → `69cf3f2`, incl. the per-request
-  timeout that stops a stalled provider from wedging a run).
+- **Engine:** 144 tests green; 11 substantive reliability mutations since the
+  115-test baseline (see `git log`: `ebd576b` → `d31639b`, incl. the per-request
+  timeout that stops a stalled provider wedging a run, a quote-aware shell guard,
+  and tail-kept verify output in the trace).
 - **Driver:** verify gate, multi-provider registry (MiniMax + z.ai GLM),
   gen-6 auto-repair, rate-limit resilience, crash-safe commits, one-call
   provider preflight; 21 hermetic tests.
@@ -385,6 +386,25 @@ metric jump.
   checkout (`green-gen6` tag). One follow-up worth capturing: a live run where
   the build *fails* and auto-repair actually fires to green (gen6-a's build
   passed directly, so the firing path was only exercised hermetically).
-- **Observability:** the trace truncates verify output before pytest's summary
-  line — widen it so the per-pass failure trajectory is visible.
+- **Observability — ✅ done (`d31639b`).** The verify trace now keeps a 4000-char
+  *tail* (not a 1000-char head), so pytest's summary line survives and the
+  per-pass failure trajectory is readable. Event-aware redaction; every other
+  preview unchanged.
+- **Shell-sandbox friction — ✅ partly done (`805bb05`).** GLM-5.2 refused 7% of
+  build tool_calls on shell metacharacters. Made the metachar guard *quote-aware*
+  (operators outside quotes still blocked; quoted literals like
+  `git commit -m "x (v1)"` now allowed) and added a concrete coder shell note.
+  Validated against the 28 real refusals: the 3 legit ones now pass, 25 operator/
+  inline-code cases stay blocked. The prompt note (the lever for those 25) is
+  unproven until a live GLM run.
+- **Stalled-provider timeout — ✅ done (`69cf3f2`, Phase D).** Per-request
+  timeout so a hung provider can't wedge a run.
+- **Inline code per §7.3 (candidate).** 9 of GLM's 28 refusals were
+  `uv run python -c "import x; print(version)"` dep-checks. Since write_file +
+  `python file.py` already gives code-exec (SPEC §7.3 is explicit the sandbox is
+  a speed bump), *allowing* inline code would cut that friction with no real
+  posture change — but it reverses a deliberate guard, so it's a decision, not a
+  mechanical fix. Left conservative for now.
 - **Repair strategy:** "fix one failure, re-run, repeat" vs. batch — untested.
+- **Auto-repair firing live:** still want a run where the build fails and the
+  *outer* auto-repair loop drives it green (gen6-a converged internally).
