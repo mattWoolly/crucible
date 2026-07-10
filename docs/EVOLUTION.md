@@ -387,12 +387,12 @@ metric jump.
 
 ## Milestone state (2026-07-08)
 
-- **Engine:** 152 tests green; 13 substantive reliability mutations since the
-  115-test baseline (see `git log`: `ebd576b` → `b4cab3e`, incl. the per-request
-  timeout that stops a stalled provider wedging a run, a quote-aware shell guard,
-  tail-kept verify output in the trace, a source-level guard against ad-hoc
-  installs, and the flush-doesn't-close fix so gen-6 repair phases keep their
-  trace).
+- **Engine:** 154 tests green; 14 substantive reliability mutations since the
+  115-test baseline (see `git log`: `ebd576b` → `dffae94`, incl. the per-request
+  timeout, a quote-aware shell guard, tail-kept verify output, a source-level
+  guard against ad-hoc installs, the flush-doesn't-close fix, and a selectable
+  batch/incremental repair strategy). Driver adds `--verify-isolated`
+  (clean-env reproducibility gate) and `--repair-strategy`.
 - **Driver:** verify gate, multi-provider registry (MiniMax + z.ai GLM),
   gen-6 auto-repair, rate-limit resilience, crash-safe commits, one-call
   provider preflight; 21 hermetic tests.
@@ -445,8 +445,14 @@ metric jump.
   the outer `_auto_repair_loop` fired and reached `verified=PASS` on repair-1
   (green from clean checkout, tag `green-glm-5.2-b`). The gen-6 loop is now
   proven end-to-end, not just hermetically.
-- **Repair strategy:** "fix one failure, re-run, repeat" vs. batch — untested.
-- **Reproducibility gate (runtime clean-env verify):** the source-level
-  ad-hoc-install guard (`9c145a5`) closes the common case; a full clean-env
-  verify pass in the gate (isolated `uv sync`) would close the rest — deferred
-  as it wants live `uv`-behavior validation.
+- **Reproducibility gate (runtime clean-env verify) — ✅ done (`931056a`).**
+  `--verify-isolated` runs the gate with `UV_PROJECT_ENVIRONMENT` at a fresh
+  dir, so `uv run` syncs ONLY declared deps — a polluted `.venv` can't make it
+  pass. Validated live against real `uv`: green `musa-glm-b` → PASS; the same
+  build with librosa undeclared → FAIL (`ModuleNotFoundError`). Belt-and-
+  suspenders with the source-level install guard (prevention + detection).
+- **Repair strategy — apparatus ✅ done (`dffae94`), A/B pending.**
+  `--repair-strategy incremental` fixes ONE failure per pass (vs `batch`, the
+  default, which fixes all). TDD'd. The actual A/B (does incremental converge
+  more reliably on large failure sets?) needs a live paired run — that's the
+  remaining experiment, not more code.
