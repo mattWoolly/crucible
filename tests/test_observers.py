@@ -20,6 +20,32 @@ def test_safe_swallows_observer_exception():
     safe(_Boom(), "llm_call", role="coder")  # must not raise
 
 
+def test_flush_does_not_close_so_multi_run_traces_survive(tmp_path):
+    # gen-6 reuses ONE observer across build + repair run()s. Each run() flushes
+    # at its end; that flush must NOT close the file, or later phases' events are
+    # silently lost (the bug the first auto-repair-firing run exposed).
+    path = tmp_path / "trace.jsonl"
+    obs = JSONLObserver(path=str(path))
+    obs.run_started(phase="build")
+    obs.flush()                      # end of "build" run — must stay open
+    obs.run_started(phase="repair")  # a second run() keeps appending
+    obs.run_finished(phase="repair")
+    obs.close()                      # end of life
+    lines = [json.loads(l) for l in path.read_text().splitlines()]
+    events = [(e["event"], e.get("phase")) for e in lines]
+    assert ("run_started", "build") in events
+    assert ("run_started", "repair") in events   # would be missing under the bug
+    assert ("run_finished", "repair") in events
+
+
+def test_close_is_idempotent(tmp_path):
+    obs = JSONLObserver(path=str(tmp_path / "t.jsonl"))
+    obs.run_started()
+    obs.close()
+    obs.close()   # must not raise
+    obs.flush()   # flushing a closed stream must not raise either
+
+
 def test_safe_handles_none_observer():
     safe(None, "run_started", task="x")  # no-op
 

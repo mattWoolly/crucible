@@ -43,6 +43,7 @@ class Observer:
     def verify(self, **f: Any) -> None: ...
     def run_finished(self, **f: Any) -> None: ...
     def flush(self) -> None: ...
+    def close(self) -> None: ...
 
 
 def safe(observer: Observer | None, event: str, **fields: Any) -> None:
@@ -86,11 +87,22 @@ class JSONLObserver(Observer):
     def run_finished(self, **f): self._emit("run_finished", f)
 
     def flush(self) -> None:
+        # Persist buffered events WITHOUT closing — a run()'s end-of-run flush
+        # must not close a trace that later phases (gen-6 auto-repair reuses one
+        # observer across build + repair runs) will keep appending to. Closing
+        # is end-of-life; see close().
         try:
             self._stream.flush()
-        finally:
-            if self._own:
+        except ValueError:
+            pass  # stream already closed (e.g. close() called first)
+
+    def close(self) -> None:
+        """Release the file handle (only if we own it). Idempotent."""
+        if self._own:
+            try:
                 self._stream.close()
+            except Exception:  # noqa: BLE001 - closing must never raise
+                pass
 
 
 # Preview fields that may carry secrets and must be redacted before leaving the process.
