@@ -1,12 +1,44 @@
-# orchestrator
+# Crucible
 
-A minimal agentic orchestrator that completes complex tasks by decomposing them
-into a validated DAG of critic-gated specialist sub-agents. Quality comes from
-**structure** — decomposition, isolation, critique, verification — not from a
-smarter model. Every worker can run on a small, cheap model (e.g. MiniMax).
+**A minimal agentic orchestrator that makes small, cheap models build real,
+verified-green software.** It completes complex tasks by decomposing them into a
+validated DAG of critic-gated specialist sub-agents. Quality comes from
+**structure** — decomposition, isolation, critique, and ground-truth
+verification — not from a smarter model. Every worker runs on a small model
+(reproduced end-to-end on MiniMax-M3 and z.ai GLM-5.2).
 
-Built to [`SPEC.md`](./SPEC.md). Implementation plan in
-[`docs/superpowers/plans/`](./docs/superpowers/plans/).
+> The Python package is `orchestrator`; **Crucible** is the project.
+
+Built to [`SPEC.md`](./SPEC.md). The full evidence-driven evolution — every
+mutation from "can it even call a tool?" to reproducibly-green multi-model
+builds — is in [`docs/EVOLUTION.md`](./docs/EVOLUTION.md).
+
+## Status — feature-complete v1
+
+The core does what it was built to do, proven across two model families: a small
+model autonomously builds a real ~50-file project and it passes its own
+`ruff` + `pytest` gate, **verified from a clean checkout** (never the model's
+say-so).
+
+**What's in:**
+- Plan → validated DAG → critic-gated parallel workers → synthesizer → final critic
+- **Ground-truth verify gate** (real `ruff` + `pytest`, run independently) — the pivotal lever
+- Bounded **verify-repair loop** with a persistent debugging session (batch or incremental)
+- **Two-phase build→auto-repair** pipeline (build, then repair-continue to green)
+- Resilience: rate-limit backoff, per-request timeout, crash-safe partial commits, graceful synthesis degradation
+- Sandboxed shell tool: allowlist, quote-aware metacharacter guard, arg-guards, ad-hoc-install guard
+- Reproducibility: source-level install guard **plus** clean-env verify (`--verify-isolated`, declared-deps only)
+- **Model-agnostic** by dependency injection; a provider registry (MiniMax, z.ai GLM)
+- Observability: JSONL trace with secret redaction and tail-kept verify output
+- 154 hermetic tests (injected LLM / verifier / clock — no live-LLM tests)
+
+**Proven:** green, clean-checkout-reproducible builds from **MiniMax-M3** and **z.ai GLM-5.2**.
+
+**Roadmap (breadth & polish — not core capability):**
+- Prove genericity on a second, non-`musa` project (the biggest open gap)
+- Language-agnostic verifiers (the driver currently hardcodes `ruff`+`pytest`)
+- Per-role model routing + token/cost accounting
+- Run resumability (today a crash commits partial work but can't resume)
 
 ## Install
 
