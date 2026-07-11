@@ -451,8 +451,18 @@ metric jump.
   pass. Validated live against real `uv`: green `musa-glm-b` → PASS; the same
   build with librosa undeclared → FAIL (`ModuleNotFoundError`). Belt-and-
   suspenders with the source-level install guard (prevention + detection).
-- **Repair strategy — apparatus ✅ done (`dffae94`), A/B pending.**
-  `--repair-strategy incremental` fixes ONE failure per pass (vs `batch`, the
-  default, which fixes all). TDD'd. The actual A/B (does incremental converge
-  more reliably on large failure sets?) needs a live paired run — that's the
-  remaining experiment, not more code.
+- **Repair strategy — apparatus ✅ done (`dffae94`); A/B ran, inconclusive by
+  design.** Ran batch vs incremental as GLM-5.2 repair-continuations from an
+  identical fixed failed state (evo-f, 20 test failures). BOTH reached green,
+  reproducible from clean checkout (100 / 75 tests) — but BOTH passed verify at
+  `attempt=0`: the repair brief's SUBTASKS fixed everything before the
+  verify-repair loop ran, so `--repair-strategy` (which governs only that loop)
+  was never exercised in either arm. The 2× token gap (6.1M vs 3.0M) is build
+  variance, not strategy. **Finding: the strategy is a *build-flow* lever (the
+  inner loop that fires when synthesis emits failing code, e.g. gen6-a's 9
+  passes), not a repair-continuation lever — repair-continuation subtasks
+  pre-empt the loop.** A real strategy A/B would need two full builds (batch vs
+  incremental auto-repair), which reintroduces build variance and costs ~2
+  builds — not worth it for a lever with such a narrow practical surface. The
+  run's real result: GLM-5.2 repaired a 20-failure M3 build to green twice from
+  an identical start (cross-model repair robustness).
