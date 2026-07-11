@@ -118,3 +118,4 @@ uv run pytest -q
 
 Cross-run memory, live LLM integration tests, a CLI entry point, multi-repo
 tasks, a streaming UI, and provisioning the container — see SPEC §12.
+# crucible
