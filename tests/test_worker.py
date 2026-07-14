@@ -1,4 +1,3 @@
-import pytest
 
 from orchestrator.config import Config
 from orchestrator.constants import DEGRADED_CONFIDENCE

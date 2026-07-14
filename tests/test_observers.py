@@ -31,7 +31,7 @@ def test_flush_does_not_close_so_multi_run_traces_survive(tmp_path):
     obs.run_started(phase="repair")  # a second run() keeps appending
     obs.run_finished(phase="repair")
     obs.close()                      # end of life
-    lines = [json.loads(l) for l in path.read_text().splitlines()]
+    lines = [json.loads(line) for line in path.read_text().splitlines()]
     events = [(e["event"], e.get("phase")) for e in lines]
     assert ("run_started", "build") in events
     assert ("run_started", "repair") in events   # would be missing under the bug
@@ -55,7 +55,7 @@ def test_jsonl_emits_one_line_per_event():
     obs = JSONLObserver(stream=buf)
     obs.run_started(task="t", workspace="/ws")
     obs.subtask_finished(subtask_id="a", role="coder", summary="s", confidence=0.9)
-    lines = [l for l in buf.getvalue().splitlines() if l.strip()]
+    lines = [line for line in buf.getvalue().splitlines() if line.strip()]
     assert len(lines) == 2
     rec = json.loads(lines[0])
     assert rec["event"] == "run_started" and rec["task"] == "t"

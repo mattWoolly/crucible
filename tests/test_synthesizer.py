@@ -1,7 +1,5 @@
-import pytest
 
 from orchestrator.config import Config
-from orchestrator.constants import DEGRADED_CONFIDENCE
 from orchestrator.llm import FakeLLMClient, llm_response
 from orchestrator.models import Subtask, WorkerResult
 from orchestrator.synthesizer import run_synthesis

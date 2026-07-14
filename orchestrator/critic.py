@@ -21,6 +21,7 @@ from .json_extract import extract_json
 from .llm import LLMClient
 from .models import CriticScore, WorkerResult
 from .observers import Observer, safe
+from .redaction import redact_preview
 from .roles import critic_prompt
 from .worker import WorkerOutput
 
@@ -75,6 +76,16 @@ async def critic_score(
     resp = await llm.complete(messages, tools=None, temperature=config.temperature_for("critic"))
     if budget is not None:
         budget.note_call(resp.usage.total_tokens)
+    safe(
+        observer, "llm_call",
+        subtask_id=subtask_id, role="critic", model=resp.model,
+        output_preview=redact_preview(resp.content or ""),
+        latency_ms=resp.latency_ms,
+        usage=resp.usage.total_tokens,
+        usage_prompt=resp.usage.prompt_tokens,
+        usage_completion=resp.usage.completion_tokens,
+        tool_calls_count=0,
+    )
 
     obj = extract_json(resp.content or "")
     if obj is None:

@@ -1,4 +1,3 @@
-import pytest
 
 from orchestrator.constants import CODER, RESEARCHER, SYNTHESIZER
 from orchestrator.tools.registry import execute_tool, tool_defs_for, tools_for

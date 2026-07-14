@@ -60,6 +60,39 @@ class NoopObserver(Observer):
     """Silent default (§9)."""
 
 
+class MultiObserver(Observer):
+    """Fan every event out to several observers (§9 'chained'). Each child is
+    dispatched through ``safe()`` so one broken sink can't starve the others."""
+
+    def __init__(self, observers: list[Observer]) -> None:
+        self._observers = [o for o in observers if o is not None]
+
+    def _fan(self, event: str, fields: dict) -> None:
+        for obs in self._observers:
+            safe(obs, event, **fields)
+
+    def run_started(self, **f): self._fan("run_started", f)
+    def plan_ready(self, **f): self._fan("plan_ready", f)
+    def subtask_started(self, **f): self._fan("subtask_started", f)
+    def llm_call(self, **f): self._fan("llm_call", f)
+    def tool_call(self, **f): self._fan("tool_call", f)
+    def critic_score(self, **f): self._fan("critic_score", f)
+    def subtask_finished(self, **f): self._fan("subtask_finished", f)
+    def verify(self, **f): self._fan("verify", f)
+    def run_finished(self, **f): self._fan("run_finished", f)
+
+    def flush(self) -> None:
+        for obs in self._observers:
+            safe(obs, "flush")
+
+    def close(self) -> None:
+        for obs in self._observers:
+            try:
+                obs.close()
+            except Exception:  # noqa: BLE001 - §9: closing must not raise
+                pass
+
+
 class JSONLObserver(Observer):
     """One JSON line per event, previews redacted (§9)."""
 

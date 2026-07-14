@@ -78,7 +78,9 @@ def render_user_task(
     return "\n".join(parts)
 
 
-def workspace_orientation(workspace: str, max_entries: int = 80) -> str:
+def workspace_orientation(
+    workspace: str, max_entries: int = 80, read_roots: tuple[str, ...] = ()
+) -> str:
     """A short orientation block naming the path convention and the current
     workspace contents (§4.1 support).
 
@@ -102,10 +104,19 @@ def workspace_orientation(workspace: str, max_entries: int = 80) -> str:
     listing = "\n".join(files) if files else "(empty)"
     if truncated:
         listing += f"\n… (listing truncated at {max_entries} entries)"
+    if read_roots:
+        roots = ", ".join(f"`{r}`" for r in read_roots)
+        path_rules = (
+            "Absolute paths and `..` are rejected for WRITES; you may READ "
+            f"(read_file/list_files) these additional paths outside the "
+            f"workspace via `..` or absolute paths: {roots}. "
+        )
+    else:
+        path_rules = "Absolute paths and `..` are rejected. "
     return (
         "Workspace orientation: you operate INSIDE the workspace root. All tool "
         "paths are RELATIVE to it — read `PROJECT.md`, not `workspace/PROJECT.md`; "
-        "list the root with path `.`. Absolute paths and `..` are rejected. "
+        f"list the root with path `.`. {path_rules}"
         f"Current workspace contents:\n{listing}"
     )
 
@@ -114,6 +125,29 @@ def workspace_orientation(workspace: str, max_entries: int = 80) -> str:
 class WorkerOutput:
     result: WorkerResult
     messages: list[dict]
+
+
+async def _gate_denial(config: Config, name: str, args: dict) -> str | None:
+    """Consult ``config.tool_gate`` (if any); return the denial tool-result
+    string, or ``None`` when the call may proceed.
+
+    The gate returns ``bool`` or ``(bool, reason)``. A gate that *raises* is
+    treated as a denial rather than crashing the worker (§11) — a broken UI
+    must not take the run down with it."""
+    if config.tool_gate is None:
+        return None
+    try:
+        verdict = await config.tool_gate(name, args)
+    except Exception as exc:  # noqa: BLE001 - §11: degrade, don't crash
+        return f"ERROR: permission gate failed ({exc}); tool call not executed"
+    reason: str | None = None
+    if isinstance(verdict, tuple):
+        allowed, reason = verdict
+    else:
+        allowed = bool(verdict)
+    if allowed:
+        return None
+    return "ERROR: denied by permission policy" + (f": {reason}" if reason else "")
 
 
 def _system_message(role: str) -> dict:
@@ -189,6 +223,8 @@ async def _run_loop(
             output_preview=redact_preview(resp.content or ""),
             latency_ms=resp.latency_ms,
             usage=resp.usage.total_tokens,
+            usage_prompt=resp.usage.prompt_tokens,
+            usage_completion=resp.usage.completion_tokens,
             tool_calls_count=len(resp.tool_calls),
         )
 
@@ -197,7 +233,17 @@ async def _run_loop(
 
         messages.append(_assistant_tool_message(resp))
         for tc in resp.tool_calls:
-            tr = await execute_tool(tc.name, tc.args, config.workspace)
+            denial = await _gate_denial(config, tc.name, tc.args)
+            if denial is not None:
+                safe(
+                    observer, "tool_call",
+                    subtask_id=subtask_id, name=tc.name, args=tc.args,
+                    result_preview=redact_preview(denial),
+                    latency_ms=0.0, error=denial,
+                )
+                messages.append({"role": "tool", "tool_call_id": tc.id, "content": denial})
+                continue
+            tr = await execute_tool(tc.name, tc.args, config.workspace, config.read_roots)
             safe(
                 observer, "tool_call",
                 subtask_id=subtask_id, name=tc.name, args=tc.args,
@@ -226,7 +272,7 @@ async def run_worker(
         dependency_ids=list(subtask.depends_on),
     )
     user_content = (
-        workspace_orientation(config.workspace)
+        workspace_orientation(config.workspace, read_roots=config.read_roots)
         + "\n\n"
         + render_user_task(subtask, dep_results)
     )

@@ -2,7 +2,7 @@ import pytest
 
 from orchestrator.errors import PlanValidationError
 from orchestrator.models import Plan, Subtask
-from orchestrator.plan_validation import topological_layers, validate_plan
+from orchestrator.plan_validation import validate_plan
 
 
 def _p(*subtasks):

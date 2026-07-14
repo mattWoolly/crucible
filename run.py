@@ -1,9 +1,10 @@
 """Tiny runner so you can drive the orchestrator without a TUI.
 
 Usage:
-    export LLM_API_KEY=...            # your MiniMax key
-    export LLM_BASE_URL=https://api.minimax.io/v1
-    export LLM_MODEL=MiniMax-Text-01
+    # provider auto-detected from GLM_API_KEY / MINIMAX_API_KEY /
+    # ANTHROPIC_API_KEY / OPENAI_API_KEY (first found wins), or force a
+    # custom endpoint with LLM_API_KEY + LLM_BASE_URL + LLM_MODEL.
+    export GLM_API_KEY=...
 
     # task as an argument, project dir with --workspace:
     uv run python run.py --workspace ./my_project "migrate tokens v1->v2 and run pytest"
@@ -19,10 +20,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
 
-from orchestrator import Config, JSONLObserver, OpenAIClient, Orchestrator
-from orchestrator.config import LLMSettings
+from orchestrator import Config, JSONLObserver, Orchestrator
+from orchestrator.observers import MultiObserver
+from orchestrator.otel import create_otel_observer
+from orchestrator.providers import make_client, resolve_from_env
 
 
 def parse_args() -> argparse.Namespace:
@@ -32,6 +36,8 @@ def parse_args() -> argparse.Namespace:
                    help="project directory the agents operate in (sandboxed)")
     p.add_argument("--log", default=None,
                    help="write JSONL trace to this file instead of stdout")
+    p.add_argument("--read-root", action="append", default=[],
+                   help="extra directory agents may READ (repeatable); writes stay in the workspace")
     p.add_argument("--threshold", type=float, default=None,
                    help="override approval_threshold (0-10)")
     p.add_argument("--max-iterations", type=int, default=None,
@@ -46,14 +52,25 @@ async def main() -> int:
         print("error: no task given (argument or stdin)", file=sys.stderr)
         return 2
 
-    settings = LLMSettings.from_env()
-    if not settings.api_key:
-        print("error: set LLM_API_KEY (and LLM_BASE_URL / LLM_MODEL)", file=sys.stderr)
+    backend = resolve_from_env()
+    if backend is None:
+        print("error: no provider configured — set GLM_API_KEY / MINIMAX_API_KEY / "
+              "ANTHROPIC_API_KEY / OPENAI_API_KEY, or LLM_API_KEY (+ LLM_BASE_URL / LLM_MODEL)",
+              file=sys.stderr)
         return 2
+    print(f"provider={backend.label} model={backend.model}", file=sys.stderr)
 
-    llm = OpenAIClient(settings.api_key, settings.base_url, settings.model)
+    llm = make_client(backend)
 
-    overrides: dict = {"observer": JSONLObserver(path=args.log)}
+    observer = JSONLObserver(path=args.log)
+    otel = create_otel_observer(provider_label=backend.label)  # None unless CRUCIBLE_OTEL=1
+    if otel is not None:
+        observer = MultiObserver([observer, otel])
+        print("otel: exporting to local collector", file=sys.stderr)
+
+    overrides: dict = {"observer": observer}
+    if args.read_root:
+        overrides["read_roots"] = tuple(os.path.abspath(r) for r in args.read_root)
     if args.threshold is not None:
         overrides["approval_threshold"] = args.threshold
     if args.max_iterations is not None:
@@ -67,6 +84,8 @@ async def main() -> int:
           f"(iterations={report.iterations}, tokens={report.tokens_total})")
     print("=" * 70)
     print(report.summary)
+    if otel is not None:
+        otel.close()  # headless runs are short — force the final export
     return 0
 
 

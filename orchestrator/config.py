@@ -45,6 +45,20 @@ class Config:
     #                   hypothesis: converges more reliably on large failure sets).
     repair_strategy: str = "batch"
 
+    # Extra directories agents may READ (read_file/list_files) outside the
+    # workspace, via ../ or absolute paths — e.g. a sibling project the task
+    # references. Writes and shell remain workspace-confined regardless.
+    # Default empty: containment behavior unchanged.
+    read_roots: tuple[str, ...] = ()
+
+    # Optional interactive permission gate (§7): an async callable
+    # ``(tool_name, args) -> bool | (bool, reason)`` consulted before EVERY
+    # tool call. ``None`` (the default) preserves headless behavior: all tool
+    # calls run, bounded only by the sandbox itself. A UI (e.g. the TUI)
+    # injects a gate to implement ask/readonly permission modes. A denial is
+    # returned to the worker as a tool ERROR string, never raised (§11).
+    tool_gate: Any | None = None
+
     def threshold_for(self, role: str) -> float:
         """Per-role threshold override falls back to the base threshold (§6.4, §10)."""
         return self.approval_threshold_by_role.get(role, self.approval_threshold)

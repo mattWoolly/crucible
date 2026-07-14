@@ -142,7 +142,6 @@ class Orchestrator:
     async def _plan(self, task: str, budget: Budget) -> Plan:
         """Run the planner, validating + repairing via corrective retries (§5.1)."""
         defect: str | None = None
-        last_plan: Plan | None = None
         for _attempt in range(self.config.max_plan_retries + 1):
             sys = system_prompt("planner")
             if defect:
@@ -152,7 +151,9 @@ class Orchestrator:
                 )
             # Ground the planner with the actual workspace contents so agentic
             # models don't try to "explore first" (they have no tools here).
-            user = workspace_orientation(self.config.workspace) + "\n\n" + task
+            user = workspace_orientation(
+                self.config.workspace, read_roots=self.config.read_roots
+            ) + "\n\n" + task
             messages = [
                 {"role": "system", "content": sys, "_role": "planner"},
                 {"role": "user", "content": user},
@@ -162,7 +163,10 @@ class Orchestrator:
             budget.note_call(resp.usage.total_tokens)
             safe(self.observer, "llm_call", role="planner", model=resp.model,
                  output_preview=resp.content or "", latency_ms=resp.latency_ms,
-                 usage=resp.usage.total_tokens, tool_calls_count=0)
+                 usage=resp.usage.total_tokens,
+                 usage_prompt=resp.usage.prompt_tokens,
+                 usage_completion=resp.usage.completion_tokens,
+                 tool_calls_count=0)
 
             obj = extract_json(resp.content or "")
             if obj is None:
@@ -176,7 +180,6 @@ class Orchestrator:
                 continue
             try:
                 plan = Plan.model_validate(obj or {})
-                last_plan = plan
                 validate_plan(plan)  # raises PlanValidationError on defect
                 return plan
             except PlanValidationError as e:

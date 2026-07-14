@@ -6,10 +6,7 @@ import pytest
 from orchestrator.errors import LLMError
 from orchestrator.llm import (
     FakeLLMClient,
-    LLMResponse,
     OpenAIClient,
-    ToolCall,
-    Usage,
     llm_response,
 )
 

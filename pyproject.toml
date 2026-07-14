@@ -4,12 +4,19 @@ version = "0.1.0"
 description = "Minimal agentic orchestrator: small-model DAG harness with critic-gated workers"
 requires-python = ">=3.12"
 dependencies = [
+    "anthropic>=0.116.0",
     "openai>=1.40",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.43.0",
+    "opentelemetry-sdk>=1.43.0",
     "pydantic>=2.7",
+    "textual>=8.2.8",
 ]
 
 [project.optional-dependencies]
 trace = ["langfuse>=2.0"]
+
+[project.scripts]
+crucible = "orchestrator.tui.app:main"
 
 [dependency-groups]
 dev = [

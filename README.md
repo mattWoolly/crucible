@@ -30,7 +30,10 @@ say-so).
 - Reproducibility: source-level install guard **plus** clean-env verify (`--verify-isolated`, declared-deps only)
 - **Model-agnostic** by dependency injection; a provider registry (MiniMax, z.ai GLM)
 - Observability: JSONL trace with secret redaction and tail-kept verify output
-- 154 hermetic tests (injected LLM / verifier / clock — no live-LLM tests)
+- **Full-screen TUI** (`uv run crucible`): live plan tree + transcript, slash
+  commands (`/permissions`, `/theme`, `/model`, `/tokens`, …), interactive
+  tool-permission gate, token utilization footer
+- 202 hermetic tests (injected LLM / verifier / clock — no live-LLM tests)
 
 **Proven:** green, clean-checkout-reproducible builds from **MiniMax-M3** and **z.ai GLM-5.2**.
 
@@ -45,6 +48,99 @@ say-so).
 ```bash
 uv sync
 ```
+
+To get the `crucible` command system-wide (any directory, no `uv run`):
+
+```bash
+uv tool install --editable .   # installs ~/.local/bin/crucible
+```
+
+`--editable` points the installed command at this working tree, so code
+changes apply without reinstalling. Drop it for a frozen snapshot; after
+dependency changes, `uv tool upgrade orchestrator` re-syncs the tool env.
+
+## TUI
+
+```bash
+# provider auto-detected from whichever key is set (first found wins):
+#   GLM_API_KEY (or ZAI_API_KEY) → glm-5.2 on z.ai
+#   MINIMAX_API_KEY              → MiniMax-M3
+#   ANTHROPIC_API_KEY            → claude-opus-4-8 (official anthropic SDK,
+#                                  also resolves `ant auth login` profiles)
+#   OPENAI_API_KEY               → needs an explicit /model openai <name>
+# or force a custom endpoint: LLM_API_KEY + LLM_BASE_URL + LLM_MODEL
+crucible --workspace ./my_project
+```
+
+Full-terminal app (Textual): splash logo, a live plan tree beside the event
+transcript, an input prompt, and a status bar with token/call utilization.
+
+**Plain input is a conversation with your operator** — a representative agent
+that clarifies intent, grounds itself in the workspace (read-only tools),
+composes a self-contained task brief, and dispatches the swarm via its
+`run_swarm` tool. It interprets the report honestly: the verify gate is the
+only proof of green, never the model's say-so. The operator defaults to the
+biggest brain available (anthropic if a key/profile exists, else the swarm's
+provider); the swarm stays on whatever `/model` says — big rep, cheap workers.
+`/swarm <task>` bypasses the operator for classic batch dispatch. In `ask`
+permission mode, swarm dispatch itself prompts for confirmation with the brief
+shown — a free plan-approval step.
+
+Slash commands:
+
+| command | does |
+| --- | --- |
+| `/permissions [auto\|ask\|readonly]` | tool permission mode — `ask` (default) prompts before `write_file`/`run_shell`; `allow <tool>` / `reset` manage the session allowlist |
+| `/theme [name]` | list or switch Textual themes |
+| `/model [provider] [model]` | list providers + key status, switch provider, or set the swarm model |
+| `/rep [provider] [model]` | show or change the operator's model (fresh session) |
+| `/swarm <task>` | dispatch the swarm directly, bypassing the operator |
+| `/reset` | fresh operator conversation |
+| `/tokens` | session token / call / per-role utilization |
+| `/roots [add <dir>\|rm <dir>\|clear]` | read-only dirs agents may access **outside** the workspace (e.g. `../sibling`) — writes and shell always stay inside |
+| `/workspace [dir]`, `/threshold [0-10]`, `/plan`, `/clear`, `/quit` | the obvious |
+
+`esc` cancels a run; `↑/↓` recall input history. The permission gate rides the
+engine's `Config.tool_gate` hook — headless runs (no gate) behave exactly as
+before.
+
+Select/copy/paste: click-drag selects text in the transcript, `ctrl+c` copies
+the selection (OSC 52 — works in WezTerm and most modern terminals; hold
+Shift while dragging for terminal-native selection instead). `/copy` grabs
+the last rep reply without any mouse work (`/copy report` / `/copy all` for
+the last final report / whole transcript). Pasting into the prompt flattens
+multi-line text into one line instead of dropping everything after line one.
+
+## Telemetry (OpenTelemetry, opt-in)
+
+Enable persistently in `~/.config/crucible/config.json` (path overridable
+via `CRUCIBLE_CONFIG`):
+
+```json
+{ "otel": { "enabled": true } }
+```
+
+or per-process with `CRUCIBLE_OTEL=1`. Precedence: env > config file >
+defaults (`CRUCIBLE_OTEL=0` force-disables even when the file enables).
+Metrics + traces go to a local OTLP collector (gRPC, default
+`http://localhost:4317` — override with `CRUCIBLE_OTEL_ENDPOINT` or the
+file's `otel.endpoint`; `CRUCIBLE_OTEL_TRACES=0` / `otel.traces` disables
+traces; `CRUCIBLE_OTEL_ENV` / `otel.environment` sets the `env` resource
+label). Default **off**: zero OTel code runs. No prompt/response content is
+exported — only counts, durations, model ids, tool names, roles, and
+pass/fail outcomes.
+
+Prometheus surface (per provider/model/role): `crucible_token_usage_total`
+(`type=input|output`), `crucible_llm_duration_milliseconds_*`,
+`crucible_run_count_total`, `crucible_tool_count_total` + duration,
+`crucible_verify_count_total{passed}`, `crucible_critic_score_*`,
+`crucible_subtask_duration_milliseconds_*`. Traces: `crucible.run` →
+`crucible.subtask` → `crucible.llm`/`crucible.tool` spans (explicit
+parenting; subtask ids are span attributes only, never metric labels).
+
+Implementation: `orchestrator/otel.py`, an `Observer` chained via
+`MultiObserver` — the engine is untouched; telemetry rides the same event
+stream as the JSONL trace and the TUI.
 
 ## Quickstart (MiniMax)
 

@@ -40,7 +40,6 @@ def _count_tool_msgs(messages):
 
 
 def _script(role, messages):
-    user = next((m for m in messages if m["role"] == "user"), {"content": ""})
     tool_msgs = _count_tool_msgs(messages)
 
     if role == "planner":
@@ -98,7 +97,7 @@ async def test_e2e_full_trace_redacted_and_silent(workspace, capfd):
     assert report.summary.startswith("Migration complete")
 
     # 2. The trace contains every event type, in a sane order.
-    events = [json.loads(l)["event"] for l in buf.getvalue().splitlines() if l.strip()]
+    events = [json.loads(line)["event"] for line in buf.getvalue().splitlines() if line.strip()]
     assert events[0] == "run_started"
     assert events[-1] == "run_finished"
     for required in (

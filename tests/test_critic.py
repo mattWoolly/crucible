@@ -1,4 +1,3 @@
-import pytest
 
 from orchestrator.config import Config
 from orchestrator.critic import (

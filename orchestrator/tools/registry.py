@@ -17,7 +17,11 @@ _READ_FILE = {
     "type": "function",
     "function": {
         "name": "read_file",
-        "description": "Read a UTF-8 text file inside the workspace. Use a relative path.",
+        "description": (
+            "Read a UTF-8 text file. Relative paths resolve inside the "
+            "workspace; configured read roots (if any — see orientation) are "
+            "readable via ../ or absolute paths."
+        ),
         "parameters": {
             "type": "object",
             "properties": {"path": {"type": "string"}},
@@ -29,7 +33,10 @@ _LIST_FILES = {
     "type": "function",
     "function": {
         "name": "list_files",
-        "description": "List files/directories at a relative path inside the workspace.",
+        "description": (
+            "List files/directories at a path inside the workspace (relative) "
+            "or under a configured read root (../ or absolute)."
+        ),
         "parameters": {
             "type": "object",
             "properties": {"path": {"type": "string"}},
@@ -90,20 +97,23 @@ class ToolResult:
     latency_ms: float = 0.0
 
 
-async def execute_tool(name: str, args: dict, workspace: str) -> ToolResult:
+async def execute_tool(
+    name: str, args: dict, workspace: str, read_roots: tuple[str, ...] = ()
+) -> ToolResult:
     """Dispatch a tool call to its implementation, off the event loop thread.
 
     Returns a ``ToolResult``; tool-level failures are returned as error strings
-    (§11) rather than raised.
+    (§11) rather than raised. ``read_roots`` widens READ access only; writes
+    and shell stay workspace-confined.
     """
     loop = asyncio.get_event_loop()
     start = loop.time()
 
     def _run() -> str:
         if name == "read_file":
-            return files.read_file(workspace, args.get("path", ""))
+            return files.read_file(workspace, args.get("path", ""), read_roots=read_roots)
         if name == "list_files":
-            return files.list_files(workspace, args.get("path", "."))
+            return files.list_files(workspace, args.get("path", "."), read_roots=read_roots)
         if name == "write_file":
             return files.write_file(workspace, args.get("path", ""), args.get("content", ""))
         if name == "run_shell":

@@ -466,3 +466,306 @@ metric jump.
   builds — not worth it for a lever with such a narrow practical surface. The
   run's real result: GLM-5.2 repaired a 20-failure M3 build to green twice from
   an identical start (cross-model repair robustness).
+
+## 2026-07-10 — Full-screen TUI (Textual): Crucible gets a face
+
+**Why.** Verdict from use: without a real terminal UI the orchestrator "won't
+be used much." Requirement: Claude Code-type functionality — full-terminal
+app, splash logo, slash commands (permissions / theme / model), live token
+utilization.
+
+**What.** New `orchestrator/tui/` package (Textual), `crucible` console
+script (`uv run crucible -w ./proj`). The TUI is a pure *client* of the
+engine's public seams:
+
+- **Events in** — `TUIObserver` funnels the standard Observer events onto the
+  Textual message bus; a live plan tree (layers → subtasks with status glyphs
+  + critic confidence), an event transcript, and a status bar with
+  token/call/tool utilization all render from the same events the JSONL trace
+  sees. `/tokens` gives per-role spend.
+- **Control out** — ONE new engine seam: `Config.tool_gate`, an async
+  `(tool, args) -> bool | (bool, reason)` consulted in the worker loop before
+  every tool call (`None` = headless behavior unchanged; a raising gate
+  degrades to denial per §11 — a broken UI can't kill a run). The TUI's
+  `PermissionGate` implements `auto`/`ask`/`readonly` modes with a
+  session allowlist and a serialized modal prompt (parallel workers can't
+  stack modals; an `always` answer un-blocks the queue behind it).
+- Slash commands (`/help /permissions /theme /model /tokens /plan /workspace
+  /threshold /clear /quit` + aliases), shell-style input history, `esc`
+  cancels the run task (engine `finally` still emits `run_finished`+flush).
+
+**Tests.** 154 → 202, all hermetic: parser, gate semantics (incl. the
+concurrent-ask race), stats (injected clock), engine `tool_gate` hook
+(FakeLLMClient; denial blocks the side effect AND returns an ERROR tool
+message), and headless Textual pilot tests for the app shell. Screenshots
+verified via `save_screenshot` in `run_test` — no live terminal needed.
+
+**Gotcha caught by tests.** `CrucibleApp._running()` silently collided with
+Textual's own `App._running` bool → `TypeError` at dispatch; renamed
+`_run_active`. Also: the repo's `.venv` still pointed at the pre-rename
+project path (`agent-orchestration-test-minimax-cc`) — stale shebangs made
+`uv run pytest` fall back to a user-level pytest; `rm -rf .venv && uv sync`
+fixed it.
+
+**Open.** Token ceiling in the status bar reads the default config (no
+per-run `max_total_tokens` yet); per-role model routing would slot into
+`/model` naturally; streaming token counts need a richer `llm_call` event.
+
+## 2026-07-10 — Provider registry in the engine + native Anthropic backend
+
+**Why.** The TUI read only `LLM_API_KEY`/`LLM_BASE_URL`, so a fresh shell
+"forgot" the keys the musa driver knew about. Requirement: pick up
+`GLM_API_KEY` / `MINIMAX_API_KEY` / `ANTHROPIC_API_KEY` (+ `OPENAI_API_KEY`
+for later) automatically.
+
+**What.**
+- `orchestrator/providers.py` — the driver's provider knowledge, promoted into
+  the engine: glm (z.ai coding endpoint, `GLM_API_KEY`/`ZAI_API_KEY`/
+  `Z_AI_API_KEY`, default `glm-5.2`), minimax (`MiniMax-M3`), anthropic
+  (`claude-opus-4-8`), openai (key but no default model — must be named).
+  Resolution: explicit `LLM_API_KEY` escape hatch wins; else first available
+  in `glm → minimax → anthropic → openai`. `make_client()` picks the client
+  by provider kind.
+- `orchestrator/anthropic_client.py` — a second real `LLMClient`, on the
+  **official `anthropic` SDK** (per Anthropic's guidance: native Messages
+  API, never the OpenAI-compat shim). Translates the engine's OpenAI shapes:
+  system msg → `system` param; assistant `tool_calls` → `tool_use` blocks;
+  consecutive `role:"tool"` results → tool_result blocks merged into ONE user
+  turn (Anthropic requires parallel results in a single message); function
+  schemas → `input_schema`. Deliberate omissions, both API-mandated on
+  current Claude models: **temperature is not forwarded** (`temperature`/
+  `top_p`/`top_k` → 400 on Opus 4.7+/Sonnet 5/Fable 5 — the engine's per-role
+  temperature is a no-op there) and **no `thinking` param** (adaptive
+  thinking would require replaying thinking blocks verbatim across turns,
+  which the OpenAI-shaped message store can't carry — open thread below).
+  Same retry architecture as OpenAIClient: SDK retries disabled, engine
+  backoff loop is the single authority, dedicated long 429 budget. A safety
+  `refusal` comes back as HTTP 200 + empty content → worker degrades (§11),
+  no crash.
+- TUI: banner/header show provider:model; `/model` lists providers with ✓/✗
+  key status; `/model <provider> [model]` switches; `/model <name>` sets the
+  model on the current provider. anthropic is allowed to launch with no env
+  key (the SDK resolves `ant auth login` profiles). `run.py` uses the same
+  resolution.
+
+**Tests.** 202 → 227, all hermetic: registry resolution (env-isolated
+fixture), translation unit tests, injected fake SDK for the client (verifies
+temperature is NOT sent, tool_use parsing, usage mapping, retry/rate-limit
+budgets, refusal path), TUI provider switching. **Live-validated** both ways:
+`resolve_from_env()` picked glm/glm-5.2 from the real shell, and one minimal
+real call to `claude-opus-4-8` round-tripped a tool call
+(`ping {value: 7}`, 451 tokens) through the schema translation.
+
+**Open.** Adaptive thinking for the Anthropic backend needs thinking-block
+replay (stash native content blocks alongside the OpenAI-shaped history);
+worth doing if Claude becomes a primary worker model rather than an option.
+The engine's role temperatures silently don't apply on Claude — acceptable
+while critics/planner steering comes from prompts, but worth a note in SPEC
+if the backend graduates.
+
+## 2026-07-10 — The Operator: a conversational representative in front of the swarm
+
+**Why.** Crucible was batch (brief in → verified report out); the
+conversational half of the loop — clarify intent, compose the brief, fire the
+run, interpret the trace, decide to repair — was always done manually by
+Claude Code. The user asked for that role in the product: "an orchestrator
+agent that can act as my representative."
+
+**What.** `orchestrator/operator.py` — an agent whose tool IS the
+orchestrator. Deliberately hand-rolled on the engine's own machinery (LLMClient
+protocol + a persistent-session loop mirroring §4), NOT an external agent
+framework: the rep must run on any provider (GLM/MiniMax/Claude), stay
+hermetically testable with FakeLLMClient, and respect the DI thesis.
+
+- One persistent chat session; per message the operator answers directly or
+  composes a **self-contained brief** and calls `run_swarm` (prompt encodes
+  the brief-writing lessons from the musa runs: swarm has no conversation
+  memory; state done-criteria incl. verification; describe current-vs-desired
+  for repairs; don't prescribe the DAG). `read_file`/`list_files` for
+  grounding.
+- **The verify gate stays sacred**: the tool result leads with
+  `verify gate: PASS/FAIL`; the prompt forbids claiming success beyond
+  `verified=True`. The rep interprets, it never vouches.
+- Routed through the same PermissionGate: in `ask` mode, dispatching the swarm
+  itself pops the confirmation modal *with the brief shown* — a free
+  plan-approval step. Swarm failures return as tool ERROR strings (§11),
+  never crash the chat.
+- Session hygiene: a turn cancelled mid-tool-call leaves dangling
+  `tool_calls`; `_heal_dangling()` backfills cancellation results so the
+  session stays replayable. Step budget bounds the loop.
+- TUI: plain input now chats with the operator (`you` / `◆ rep` lines);
+  `/swarm <task>` is direct batch dispatch; `/reset` fresh session; `/rep`
+  shows/sets the operator's model — **defaulting to the big brain (anthropic
+  key → claude-opus-4-8) while the swarm stays on `/model`'s small model**.
+  First real use of per-role model routing, at the rep/swarm boundary.
+
+**Tests.** 227 → 243, hermetic: conversation persistence, dispatch + report
+feedback, gate denial, swarm-failure containment, empty-brief rejection,
+grounding tools, dangling-tool-call healing, step budget; TUI routing tests
+with a stub operator. **Live-validated**: operator on real claude-opus-4-8
+read a scratch workspace via its tools (2 tool calls) and answered correctly
+WITHOUT dispatching the swarm when told not to.
+
+**Open.** No operator-level token budget (per-chat Budget like the engine's);
+the rep's system prompt will want tuning after the first real build driven
+through conversation; a `/plan-confirm`-style edit-the-brief-before-dispatch
+affordance falls out of the ask-mode modal but could be richer (edit, not
+just allow/deny).
+
+## 2026-07-10 — Splash glitch (and the alignment bug it monetizes)
+
+The logo looked staggered because Textual's `text-align: center` centers each
+line independently and the ANSI-shadow lines had ragged widths. Fix +
+feature in one: `logo_lines()` pads to uniform width (true alignment), and the
+splash now *glitches in* — per-line horizontal jitter with decaying amplitude
+at 20fps for ~1.2s, occasional corrupted-scanline color flickers, then a snap
+to the aligned gradient. Key-dismiss works mid-glitch. `logo_markup()` grew
+`offsets`/`colors` params (width-preserving shifts), unit-tested; a pilot test
+drives `_glitch_tick()` past the window deterministically and asserts the
+settled frame is uniform-width. 243 → 251 tests.
+
+## 2026-07-11 — WI-34: native OpenTelemetry telemetry (ported from Determa)
+
+**Why.** Per-provider/per-model usage (tokens, latency), run/subtask/tool
+spans, and verify outcomes should land in the existing self-hosted
+Prometheus + Loki + Grafana stack alongside Claude Code / Codex telemetry.
+Spec: `WI-34-otel-telemetry.md` (Determa's WI, structure reused; names and
+seams translated to Crucible).
+
+**What.** `orchestrator/otel.py` — an `OTelObserver` riding the Observer
+seam (the Crucible-native equivalent of Determa's `CoreSessionDeps.telemetry`
+injection; zero engine API changes), chained behind the UI/JSONL observer via
+a new `MultiObserver` (safe fan-out: one broken sink can't starve the rest).
+Load-bearing choices mirrored from the Determa implementation: providers are
+LOCAL (never OTel globals); span parenting is EXPLICIT keyed by `subtask_id`
+(parallel workers interleave events — ambient context would mis-parent);
+instrument names in `.` form; high-cardinality ids are span attributes only;
+in-memory reader/exporter injectable for hermetic tests; disabled default
+returns None (zero OTel code runs). Retro-spans reconstruct start times from
+event latency since engine events arrive post-completion. Config:
+`CRUCIBLE_OTEL=1`, `CRUCIBLE_OTEL_ENDPOINT` (default gRPC :4317, same path
+as Claude Code), `CRUCIBLE_OTEL_ENV`, `CRUCIBLE_OTEL_TRACES=0`.
+
+**Engine accounting fixes riding along:** `llm_call` events now carry
+`usage_prompt`/`usage_completion` (token type split for the `type` label),
+and the critic finally emits `llm_call` at all — its tokens previously hit
+only the Budget, undercounting the TUI stats and any observer.
+
+**Metrics** (Prometheus names): `crucible_token_usage_total{provider,model,
+role,type}`, `crucible_llm_duration_milliseconds_*`, `crucible_run_count_total`,
+`crucible_tool_count_total{tool,ok}` + duration, `crucible_verify_count_total
+{passed}`, `crucible_critic_score_*{approved}`, `crucible_subtask_duration_
+milliseconds_*{role}`. **Traces:** `crucible.run` → `crucible.subtask` →
+`crucible.llm`/`crucible.tool`.
+
+**Tests.** 251 → 265, hermetic (InMemoryMetricReader/InMemorySpanExporter —
+no network): token fan-out by type incl. zero-skip and total-fallback, all
+counters, span hierarchy + retroactive timing, crashed-run span closure,
+no-high-card-labels assertion, env config, MultiObserver isolation.
+
+**Live-validated** against the real stack: synthetic events through real
+OTLP/gRPC → all 8 instruments on the collector `:8889` with correct
+translated names → Prometheus query `sum by (model,type)
+(crucible_token_usage_total)` returns the glm-5.2 input/output split.
+
+**Findings for the monitoring stack (not Crucible):**
+1. The collector's traces pipeline 404s: Loki has no `/otlp/v1/traces`
+   endpoint (logs-only OTLP). Crucible's spans reach the collector and are
+   then dropped — pre-existing for ANY trace producer in this stack. Fix is
+   collector-side: add a trace store (Tempo) or point traces elsewhere.
+2. Grafana `ai-agents` dashboard extension (spec §7) is the remaining ops
+   step; PromQL is ready in README/this entry.
+
+**Open.** No cost metric yet — Crucible has no per-model pricing table
+(roadmap: token/cost accounting); when it grows one, `crucible.cost.usage`
+drops in beside the token counter. Operator chat llm_calls are exported when
+the TUI's OTel observer is enabled (they ride the same observer).
+
+## 2026-07-11 — Persistent telemetry config (`~/.config/crucible/config.json`)
+
+WI-34 §5's config-file layer, completing env-only enablement:
+`TelemetrySettings.load()` resolves env > config file > defaults (env can
+force-disable what the file enables). File shape
+`{"otel": {"enabled": true, "endpoint": ..., "environment": ...,
+"traces": ...}}`; path overridable via `CRUCIBLE_CONFIG`; a missing or
+corrupt file silently falls back — telemetry config must never break
+startup. A suite-wide conftest fixture points `CRUCIBLE_CONFIG` at a
+nonexistent path so tests can never read the developer's real config (which
+now enables OTel and would otherwise spin real exporters inside unit tests).
+265 → 268 tests. The user's machine now has telemetry on persistently.
+
+## 2026-07-12 — Read roots: agents may look outside the workspace (read-only)
+
+**Why.** Tasks often reference a sibling project ("port the pattern from
+`../determa`") but the sandbox hard-rejected `..`, absolute paths, and
+symlink escapes — agents were blind outside the workspace.
+
+**What.** `Config.read_roots: tuple[str, ...]` — extra directories agents may
+READ. Asymmetric on purpose: `read_file`/`list_files` gain a
+`resolve_readable()` path (workspace OR any root, reachable via `..`/absolute
+paths, same realpath-first symlink discipline — a symlink inside a root
+pointing somewhere un-rooted is still rejected, and root-name prefixes don't
+leak `sibling` → `sibling-2`); `write_file` keeps the strict
+`resolve_in_workspace()` rule and `run_shell`'s path guards are untouched —
+**mutation never leaves the workspace regardless of roots**. Default empty:
+containment behavior byte-identical.
+
+Plumbing: `execute_tool(..., read_roots)`; `workspace_orientation()` names
+the roots so models know reads may go there (and states writes still can't);
+root listings render absolute paths (workspace-relative naming would be
+ambiguous). Operator shares ONE mutable roots list with the TUI so
+`/roots add ../x` applies mid-conversation without a session reset. Surfaces:
+TUI `/roots [add|rm|clear]`, `run.py --read-root` (repeatable).
+
+**Tests.** 268 → 281: default-unchanged, `..`/absolute into roots allowed,
+outside-all-roots denied, prefix-leak and symlink-escape rejections, writes
+never widened (files + registry level), orientation conditional, worker
+end-to-end via Config, operator live-mutation of the shared list, /roots
+command. Pre-existing suite untouched — proves default behavior identical.
+
+## 2026-07-13 — Highlight / copy / paste in the TUI
+
+Textual 8 already ships the hard parts — click-drag text selection is on by
+default for RichLog (`ALLOW_SELECT`), `ctrl+c`/`super+c` copies the selection
+via the Screen binding, and clipboard writes go over OSC 52 (mirrored on
+`app.clipboard` for tests). What Crucible was actually missing:
+
+- **Multi-line paste silently truncated** — Textual's Input keeps only line 1
+  of a bracketed paste. `PromptInput._on_paste` now flattens newlines to
+  spaces so a pasted paragraph/brief lands whole (headless-verified before:
+  `"line one"`; after: full text).
+- **`/copy [reply|report|all]`** — mouse-free grabs of the things you
+  actually want out of a session: the last operator reply (default), the last
+  final-report summary (tracked from BOTH dispatch paths: /swarm's panel and
+  the operator's run_swarm), or the whole transcript.
+
+281 → 284 tests: paste flattening, /copy sources + clipboard mirror + empty/
+usage paths, selection opt-in assertions. Terminal note: OSC 52 requires
+terminal support (WezTerm yes); shift+drag remains the terminal-native
+fallback and is documented in the README.
+
+## 2026-07-13 — Transcript rewrite: RichLog → Transcript (selection actually works)
+
+User report: click-drag did nothing in the output window. Diagnosis via
+headless mouse simulation: the drag REGISTERED (a Selection appeared in
+`screen.selections`) but start/end never resolved — `Widget.get_selection`
+extracts text only from widgets whose `_render()` yields Text/Content, and
+RichLog renders pre-baked strips → always None. A Textual limitation, not a
+config problem; `allow_select=True` was a red herring.
+
+Fix: new `Transcript(VerticalScroll)` widget — one Static per write(), same
+write()/clear() surface, parallel plain-text log (`plain_lines()`) for /copy
+all and tests, MAX_ENTRIES cap (oldest lines drop), stick-to-bottom
+auto-scroll unless the user scrolled up. Statics render Text/Content so
+selection resolves for real (pilot-verified: drag extracts the exact
+substring).
+
+Bug found by the rewrite: Rich SILENTLY ignores unknown span styles at print
+time but Textual's renderer RAISES — so markup like `[auto|ask|readonly]` in
+usage strings (parses as a tag, fails as a style) went from harmless in
+RichLog to app-crashing in Static. `_validated_markup()` now Style.parse()s
+every span eagerly and degrades to literal text; the handful of UI strings
+with intentional bracket-literals now escape() them properly.
+
+284 → 286 tests: drag-selection resolves text (the regression test that
+would have caught this), renderables + bad markup don't crash, entry cap.

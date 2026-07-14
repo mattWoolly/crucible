@@ -7,7 +7,7 @@ per-role rubric so it scores against explicit criteria, not vibes (§6.1).
 
 from __future__ import annotations
 
-from .constants import CODER, CRITIC, PLANNER, RESEARCHER, SYNTHESIZER
+from .constants import CODER, PLANNER, RESEARCHER, SYNTHESIZER
 
 _JSON_CONTRACT = (
     "Work in TURNS. On each turn, either CALL a tool to make progress or, once "
