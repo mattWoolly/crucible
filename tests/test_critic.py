@@ -1,3 +1,4 @@
+import json
 
 from orchestrator.config import Config
 from orchestrator.critic import (
@@ -7,6 +8,7 @@ from orchestrator.critic import (
 )
 from orchestrator.llm import FakeLLMClient, llm_response
 from orchestrator.models import CriticScore, WorkerResult
+from orchestrator.observers import Observer
 from orchestrator.worker import WorkerOutput
 
 
@@ -18,6 +20,17 @@ def _critic_json(score, approved):
     return llm_response(f'{{"score": {score}, "approved": {str(approved).lower()}, "issues": ["x"], "suggestions": ["y"]}}')
 
 
+def _critic_json_with_rubric(score, approved, rubric):
+    payload = {
+        "score": score,
+        "approved": approved,
+        "issues": ["x"],
+        "suggestions": ["y"],
+        "rubric": rubric,
+    }
+    return llm_response(json.dumps(payload))
+
+
 def _revise_fn_from(outputs):
     it = iter(outputs)
 
@@ -25,6 +38,25 @@ def _revise_fn_from(outputs):
         return next(it)
 
     return revise
+
+
+class RecordingObserver(Observer):
+    def __init__(self):
+        self.events = []   # event names, in order
+        self.records = []  # (name, fields) pairs, for field-level assertions
+
+    def __getattribute__(self, name):
+        # Record every known event call.
+        if name in (
+            "run_started", "plan_ready", "subtask_started", "llm_call",
+            "tool_call", "critic_score", "subtask_finished", "verify",
+            "run_finished", "flush",
+        ):
+            def rec(**f):
+                self.events.append(name)
+                self.records.append((name, f))
+            return rec
+        return object.__getattribute__(self, name)
 
 
 # --- pure gate logic ------------------------------------------------------
@@ -104,3 +136,31 @@ async def test_invalid_critic_output_then_iterate():
     # second is accepted.
     assert score.approved is True
     assert out.result.summary == "v2"
+
+
+# --- observer event capture (SPEC §6.1, §9) -------------------------------
+async def test_critic_score_event_surfaces_rubric_line_items():
+    # The critic_score event (§9) must carry the per-role rubric line-items
+    # (§6.1) so a trace answers "which criteria passed?". Drive the loop with a
+    # FakeLLMClient whose critic response embeds a rubric array, and capture the
+    # emitted event via a RecordingObserver.
+    rec = RecordingObserver()
+    rubric = [
+        {"criterion": "covers the spec", "passed": True, "note": "good"},
+        {"criterion": "tests added", "passed": False, "note": "missing"},
+    ]
+    fake = FakeLLMClient({"critic": [_critic_json_with_rubric(9, True, rubric)]})
+    config = Config(workspace="/tmp", max_iterations_per_subtask=0)
+    out, score = await run_critic_loop(
+        fake, "coder", "c1", "task", _wo("x"), _revise_fn_from([]), config,
+        observer=rec,
+    )
+    critic_events = [f for name, f in rec.records if name == "critic_score"]
+    assert len(critic_events) == 1  # one scoring round
+    payload = critic_events[0]
+    assert payload["subtask_id"] == "c1"
+    assert payload["score"] == 9
+    assert payload["approved"] is True  # RAW critic value (pre-threshold), here accepted
+    assert payload["issues"] == ["x"]
+    # The event surfaces the rubric line-items, each RubricItem.model_dump().
+    assert payload["rubric"] == rubric

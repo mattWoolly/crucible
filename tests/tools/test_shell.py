@@ -199,3 +199,74 @@ def test_output_capped(ws):
     (__import__("pathlib").Path(ws) / "big.txt").write_text(big)
     r = run_shell(ws, "cat big.txt", output_cap=1000)
     assert "[TRUNCATED" in r.output
+
+
+# --- gap coverage: env exec-vector, git vectors, destructive deny-patterns ---
+
+# (gap 1) `env` launching a non-allowlisted program is guarded (the env AND
+# xargs exec-vectors are checked together in _check_argument_guards).
+def test_env_non_allowlisted_program_rejected(ws):
+    r = run_shell(ws, "env nmap")
+    assert not r.ok and "non-allowlisted" in r.output
+
+
+# (gap 2) git arg-guards cover -c and --exec-path.
+def test_git_exec_path_rejected(ws):
+    # `git --exec-path=evil` (and the =PATH form) is rejected — it can point
+    # git at an attacker-controlled git binary.
+    r = run_shell(ws, "git --exec-path=evil status")
+    assert not r.ok and "execute arbitrary code" in r.output
+    # The --exec-path=value form is caught by the startswith branch.
+    r2 = run_shell(ws, "git --exec-path=evil")
+    assert not r2.ok and "execute arbitrary code" in r2.output
+
+
+def test_git_exec_path_separate_arg_rejected(ws):
+    # `--exec-path PATH` as its own token is caught by the set membership.
+    r = run_shell(ws, "git --exec-path evil")
+    assert not r.ok and "execute arbitrary code" in r.output
+
+
+# git aliases (the non -c form), hooks, and pagers are NOT guarded — they reach
+# execution. tmp_path isn't a git repo, so git exits non-zero, but it RAN rather
+# than being refused. These document the real (unguarded) behavior.
+def test_git_alias_not_c_reaches_execution(ws):
+    # NOTE: git aliases are not guarded (SPEC §7 item 5 names git -c/--exec-path
+    # only; alias expansion to arbitrary commands is out of scope).
+    r = run_shell(ws, "git notarealalias")
+    assert "refused" not in r.output
+    assert "not in allowlist" not in r.output
+
+
+def test_git_paginate_not_guarded(ws):
+    # NOTE: --paginate / GIT_PAGER pager hijacking is not guarded.
+    # GIT_PAGER=evil as a leading VAR=VAL token is rejected by the allowlist
+    # (first-token check), but the in-argv --paginate vector itself is unguarded.
+    r = run_shell(ws, "git --paginate status")
+    assert "refused" not in r.output
+    assert "not in allowlist" not in r.output
+
+
+# (gap 4) destructive deny-patterns must reach the deny layer and be refused
+# with reason 'deny-pattern: <s>', using the exact deny-list substrings.
+def test_rm_rf_root_denied(ws):
+    r = run_shell(ws, "rm -rf /")
+    assert not r.ok and "deny-pattern" in r.output
+
+
+def test_chmod_777_denied(ws):
+    r = run_shell(ws, "chmod 777 x")
+    assert not r.ok and "deny-pattern" in r.output
+
+
+def test_bash_dash_c_denied(ws):
+    # bash is NOT in the allowlist, so `bash -c evil` is refused at the
+    # allowlist layer (not the deny layer) — reason 'command not in allowlist'.
+    r = run_shell(ws, "bash -c evil")
+    assert not r.ok and "allowlist" in r.output
+
+
+def test_fork_bomb_denied(ws):
+    # The fork-bomb form `:(){ ...` is caught by the ':(){' deny substring.
+    r = run_shell(ws, ":(){ :|:& };:")
+    assert not r.ok and "deny-pattern" in r.output
